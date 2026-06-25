@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compute-type",
         choices=("auto", "int8", "float16", "int8_float16", "float32"),
-        default="auto",
+        default="float16",
         help="Inference compute type.",
     )
     parser.add_argument(
@@ -104,10 +104,25 @@ def save_cache(output_dir: Path, completed_files: set[str]) -> None:
 def resolve_input_media(input_path: Path) -> list[Path]:
     """入力パスを解決し、処理対象となるメディアファイルのリストを作成日時(古い順)でソートして返します。"""
     if input_path.is_file():
+        if "#" in input_path.name:
+            new_path = input_path.with_name(input_path.name.replace("#", "_"))
+            print(f"Renaming unsafe file (contains '#') to: {new_path.name}", flush=True)
+            input_path.rename(new_path)
+            input_path = new_path
         return [input_path]
 
     if not input_path.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
+
+    # '#' が含まれるファイルがあれば自動でリネーム（PyAVが '#' を含むパスをオープンできない問題への対策）
+    for path in input_path.iterdir():
+        if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS and "#" in path.name:
+            new_path = path.with_name(path.name.replace("#", "_"))
+            print(f"Renaming unsafe file (contains '#') to: {new_path.name}", flush=True)
+            try:
+                path.rename(new_path)
+            except Exception as e:
+                print(f"Failed to rename {path.name}: {e}", file=sys.stderr, flush=True)
 
     candidates = [
         path for path in input_path.iterdir()
@@ -165,89 +180,51 @@ def write_outputs(text_path: Path, json_path: Path, result: dict) -> None:
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def transcribe_file(media_path: Path, output_dir: Path, args: argparse.Namespace) -> int:
+def transcribe_file(media_path: Path, output_dir: Path, model: "WhisperModel", args: argparse.Namespace) -> int:
     """
-    指定された単一のメディアファイルを OpenAI Whisper で文字起こし処理します。
-    無音/BGM区間のハルシネーション（幻覚）防止のために簡易 VAD ポストプロセスを適用します。
+    指定された単一のメディアファイルを faster-whisper で文字起こし処理します。
     """
-    import torch
-    import whisper
-    import numpy as np
-
     active_device = select_device(args.device)
-    print(f"Loading Whisper model '{args.model}' on {active_device}...", flush=True)
-    model = whisper.load_model(args.model, device=active_device)
 
     # 推論設定の構築
     decode_options = {
         "task": args.task,
         "beam_size": args.beam_size,
-        "verbose": True,
         "condition_on_previous_text": False,  # 幻覚ループの伝染を防ぐ
-        "no_speech_threshold": 0.6,
-        "logprob_threshold": -1.0,
+        "vad_filter": True,  # 内蔵の Silero VAD を使用して無音区間をフィルタリング
+        "batch_size": 8,  # バッチサイズを 8 に設定して推論を高速化
     }
     if args.language.lower() != "auto":
         decode_options["language"] = args.language
 
-    # CPUとGPUでの浮動小数点精度の選択
-    decode_options["fp16"] = False if active_device == "cpu" else True
-
-    # FFmpeg dynamic パイプ処理でのハング・クラッシュを避けるために事前に一括メモリロード
-    print("Loading audio file into memory...", flush=True)
-    audio = whisper.load_audio(str(media_path))
-    print(f"Audio loaded. Duration: {audio.shape[0]/16000:.2f} seconds", flush=True)
-
-    # 簡易 VAD (Voice Activity Detection): 30秒ウィンドウの音量 (RMS) が 0.018 未満のチャンクを無音と判定
-    sr = 16000
-    chunk_size = sr * 30
-    num_chunks = int(np.ceil(len(audio) / chunk_size))
-    silent_chunks = set()
-    for i in range(num_chunks):
-        start_idx = i * chunk_size
-        end_idx = min((i + 1) * chunk_size, len(audio))
-        chunk = audio[start_idx:end_idx]
-        if len(chunk) > 0:
-            rms = np.sqrt(np.mean(chunk ** 2))
-            if rms < 0.018:
-                silent_chunks.add(i)
-    print(f"VAD detected {len(silent_chunks)} of {num_chunks} chunks as silence (RMS < 0.018).", flush=True)
-
-    # AMD ROCm での Flash/Memory-Efficient Attention のフリーズを防ぐため math バックエンドを強制
     print("Starting Whisper transcription...", flush=True)
-    with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
-        raw_result = model.transcribe(audio, **decode_options)
+    segments, info = model.transcribe(str(media_path), **decode_options)
 
-    # VAD に基づく無音区間のテキストセグメント除外（ハルシネーションポストフィルタ）
-    segments = []
-    filtered_count = 0
-    for i, seg in enumerate(raw_result.get("segments", [])):
-        start_time = seg.get("start", 0.0)
-        chunk_idx = int(start_time // 30)
-        if chunk_idx in silent_chunks:
-            filtered_count += 1
-            continue
-        segments.append({
-            "id": len(segments),
-            "start": start_time,
-            "end": seg.get("end"),
-            "text": seg.get("text", "").strip(),
+    print(f"Detected language '{info.language}' with probability {info.language_probability:.2f}", flush=True)
+
+    result_segments = []
+    for segment in segments:
+        # 進捗表示用に出力
+        print(f"[{format_seconds(segment.start)} -> {format_seconds(segment.end)}] {segment.text}", flush=True)
+        result_segments.append({
+            "id": len(result_segments),
+            "start": segment.start,
+            "end": segment.end,
+            "text": segment.text.strip(),
         })
-    print(f"VAD post-process: filtered out {filtered_count} segments in silent zones.", flush=True)
 
-    full_text = " ".join([seg["text"] for seg in segments])
+    full_text = " ".join([seg["text"] for seg in result_segments])
     result = {
         "text": full_text.strip(),
-        "language": raw_result.get("language", args.language),
-        "segments": segments
+        "language": info.language,
+        "segments": result_segments
     }
 
     # 出力ファイルパスの定義と書き出し
     text_path, json_path = build_output_paths(output_dir, media_path)
     write_outputs(text_path, json_path, result)
 
-    active_compute_type = "float16" if decode_options.get("fp16") else "float32"
-    print(f"Success! output={text_path} (device={active_device}, compute={active_compute_type})", flush=True)
+    print(f"Success! output={text_path} (device={active_device}, compute={args.compute_type})", flush=True)
     return 0
 
 
@@ -266,6 +243,21 @@ def run_transcribe_worker(args: argparse.Namespace) -> int:
 
     print(f"Found {total} media files. (Skipped: {len(completed_files & {p.name for p in media_paths})})", flush=True)
 
+    # 実際に処理を行うファイルがある場合のみモデルをロードする
+    target_paths = [p for p in media_paths if p.name not in completed_files]
+    if not target_paths:
+        print(f"Batch transcription completed. Total: {total}, Processed: 0, Skipped: {total}", flush=True)
+        return 0
+
+    from faster_whisper import WhisperModel
+    active_device = select_device(args.device)
+    print(f"Loading faster-whisper model '{args.model}' on {active_device} (compute_type={args.compute_type})...", flush=True)
+    model = WhisperModel(
+        args.model,
+        device=active_device,
+        compute_type=args.compute_type
+    )
+
     for i, path in enumerate(media_paths, 1):
         file_key = path.name
         if file_key in completed_files:
@@ -275,7 +267,7 @@ def run_transcribe_worker(args: argparse.Namespace) -> int:
 
         print(f"[{i}/{total}] Processing: {file_key}", flush=True)
         try:
-            exit_code = transcribe_file(path, output_dir, args)
+            exit_code = transcribe_file(path, output_dir, model, args)
             if exit_code == 0:
                 completed_files.add(file_key)
                 save_cache(output_dir, completed_files)

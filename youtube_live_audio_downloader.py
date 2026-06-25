@@ -171,6 +171,7 @@ def download_and_extract(
         "retries": 10,
         "fragment_retries": 10,
         "skip_unavailable_fragments": True,
+        "concurrent_fragment_downloads": 5,  # 並行フラグメントダウンロードで高速化
         "continuedl": True,
         "no_part": False,
         "quiet": not debug,
@@ -195,6 +196,18 @@ def download_and_extract(
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
+        # PyAV/FFmpeg のバグ回避（ファイル名に '#' が含まれるとオープンできない）
+        # ダウンロード・変換されたファイル名に '#' が含まれていればリネームする
+        for path in output_dir.iterdir():
+            if path.is_file() and video_id in path.name and "#" in path.name:
+                new_name = path.name.replace("#", "_")
+                new_path = path.with_name(new_name)
+                try:
+                    path.rename(new_path)
+                    log_info(f"ファイル名を安全化しました: \"{new_name}\"")
+                except Exception as rename_err:
+                    log_warn(f"ファイル名のリネームに失敗しました: {rename_err}")
+
         # 成功
         log_success(current_index, total_count, f"音声抽出完了: \"{title}\" ({audio_format})")
         return True, None
@@ -233,9 +246,9 @@ def main():
     )
     parser.add_argument(
         "-f", "--format",
-        default="mp3",
-        choices=["mp3", "m4a", "wav", "opus", "flac"],
-        help="出力する音声ファイルのフォーマット (デフォルト: mp3)"
+        default="best",
+        choices=["best", "mp3", "m4a", "wav", "opus", "flac"],
+        help="出力する音声ファイルのフォーマット。'best'を指定すると再エンコードせずに元ファイルのままコピー・抽出します (デフォルト: best)"
     )
     parser.add_argument(
         "-b", "--bitrate",
@@ -308,26 +321,37 @@ def main():
         log_info("処理対象の動画はありません。処理を終了します。")
         return
 
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     success_count = 0
     fail_count = 0
-    
-    try:
-        for idx, video in enumerate(target_videos, start=1):
-            video_id = video["id"]
-            
-            # ダウンロード実行
-            success, is_unrecoverable = download_and_extract(
-                video=video,
-                output_dir=output_dir,
-                audio_format=args.format,
-                bitrate=args.bitrate,
-                cookies_browser=args.cookies_from_browser,
-                ffmpeg_location=args.ffmpeg_location,
-                current_index=idx,
-                total_count=len(target_videos),
-                debug=args.debug
-            )
+    cache_lock = threading.Lock()
 
+    def process_video(video, idx):
+        nonlocal success_count, fail_count
+        video_id = video["id"]
+        
+        # YouTubeのBAN対策: リクエストの開始を少しずらす (staggering)
+        if idx > 1:
+            stagger_time = random.uniform(1.0, 4.0)
+            log_info(f"スレッド [{idx}]: リクエスト集中防止のため {stagger_time:.1f} 秒待機してから開始します...")
+            time.sleep(stagger_time)
+
+        # ダウンロード実行
+        success, is_unrecoverable = download_and_extract(
+            video=video,
+            output_dir=output_dir,
+            audio_format=args.format,
+            bitrate=args.bitrate,
+            cookies_browser=args.cookies_from_browser,
+            ffmpeg_location=args.ffmpeg_location,
+            current_index=idx,
+            total_count=len(target_videos),
+            debug=args.debug
+        )
+
+        with cache_lock:
             if success:
                 success_count += 1
                 # キャッシュに即座に保存
@@ -343,11 +367,15 @@ def main():
                     cache_data["last_updated"] = datetime.datetime.now().isoformat()
                     save_cache(cache_file, cache_data)
 
-            # 最後の動画でなければ、3〜7秒のランダム待機を挿入
-            if idx < len(target_videos):
-                wait_time = random.randint(3, 7)
-                log_info(f"{wait_time}秒間待機します...")
-                time.sleep(wait_time)
+    max_workers = 5  # 最大5並行でダウンロードを実行
+    log_info(f"並行ダウンロードを開始します (スレッド数: {max_workers})...")
+    
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_video, video, idx) for idx, video in enumerate(target_videos, start=1)]
+            # 各スレッドの実行と結果の待機
+            for future in futures:
+                future.result()
 
     except KeyboardInterrupt:
         log_info("処理がユーザーによって中断されました。キャッシュを保存して終了します。")
