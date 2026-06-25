@@ -1,14 +1,46 @@
 # TimeStamper テストダウンローダー
 
-## 1. 依存関係のインストール
+## 1. 依存関係のインストールと環境構築 (AMD ROCm + Windows 対応)
 
-```powershell
-pip install -r requirements.txt
-```
+Ryzen / Radeon GPU を搭載した AMD 環境 (ROCm) で `faster-whisper` による高速な文字起こしを行うためのセットアップ手順です。
 
-このプロジェクトは fast-whisper 専用です。Ryzen / Radeon GPU を搭載した AMD 環境 (ROCm) を利用できるよう構築されています。
+### 1-1. 必須要件
+- OS: Windows 10/11
+- AMD GPU (RDNA 3/3.5 アーキテクチャの iGPU/dGPU, 例: Radeon 780M / 890M / RX 7000以上)
+- 仮想環境の構築 (推奨)
+  ```powershell
+  python -m venv venv
+  .\venv\Scripts\Activate.ps1
+  ```
 
-AMD GPU を利用する場合、バックエンドである `ctranslate2` の ROCm ビルドを導入しており、自動的に環境変数 `HSA_OVERRIDE_GFX_VERSION=11.0.0` が適用されて RDNA 3/3.5 の統合 GPU (Radeon 780M / 890M 等) も動作するよう最適化されています。
+### 1-2. パッケージのインストール
+
+1. **基本的な依存関係のインストール**
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+2. **PyTorch ROCm版のインストール**
+   AMD GPU の HIP SDK を利用可能なバージョンの PyTorch をインストールします（通常、PyTorch が正常に ROCm GPU を検知するために必要です）。
+   ```powershell
+   pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/rocm7.2
+   ```
+
+3. **CTranslate2 (faster-whisper バックエンド) Windows ROCm 版のインストール**
+   `faster-whisper` が内部で使用する `ctranslate2` は、標準の PyPI 版が CUDA (NVIDIA) のみの対応であるため、公式リリースの Windows ROCm ビルドを手動で導入します。
+   
+   - [CTranslate2 Releases](https://github.com/OpenNMT/CTranslate2/releases) にアクセスし、**`rocm-python-wheels-Windows.zip`** をダウンロードします（例: v4.8.0）。
+   - ダウンロードした zip ファイルを展開します。
+   - 展開された wheel の中から、使用している Python のバージョンに対応するファイルをインストールします（Python 3.12 を使用している場合は `cp312` を含む wheel）。
+     ```powershell
+     pip install path/to/ctranslate2-4.8.0-cp312-cp312-win_amd64.whl --force-reinstall
+     ```
+
+### 1-3. 環境変数と互換性の自動適用
+文字起こしスクリプト `transcribe_local.py` の実行時、以下の設定が自動的に適用されるため、RDNA 3/3.5 の統合 GPU も自動的に動作します。
+- `HSA_OVERRIDE_GFX_VERSION=11.0.0` (RDNA 3/3.5 iGPU/APU 互換)
+- `HF_HUB_DISABLE_SYMLINKS_WARNING=1` (Windows上のHFシンボリックリンク警告抑止)
+- `KMP_DUPLICATE_LIB_OK=TRUE` (OpenMP ランタイム競合回避)
 
 ## 2. 配信アーカイブ（音声）を一括ダウンロードする
 

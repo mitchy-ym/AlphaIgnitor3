@@ -4,6 +4,8 @@ import os
 import sys
 import time
 from pathlib import Path
+import numpy as np
+import torch
 
 # AMD ROCm RDNA3/3.5 iGPU/APU 互換性（Radeon 890M / 780M など）のための環境変数設定
 os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
@@ -30,7 +32,7 @@ MEDIA_EXTENSIONS = {".mp3", ".m4a", ".wav", ".opus", ".flac", ".mp4", ".mkv", ".
 def build_parser() -> argparse.ArgumentParser:
     """コマンドライン引数の解析器を構築します。"""
     parser = argparse.ArgumentParser(
-        description="Local media transcription script optimized for AMD ROCm GPU."
+        description="Local media transcription script optimized for AMD ROCm GPU using faster-whisper."
     )
     parser.add_argument(
         "input_path",
@@ -139,7 +141,6 @@ def select_device(device: str) -> str:
     """デバイスが auto の場合に、GPUが利用可能なら cuda を選択し、そうでなければ cpu を選択します。"""
     if device == "auto":
         try:
-            import torch
             return "cuda" if torch.cuda.is_available() else "cpu"
         except Exception:
             pass
@@ -182,36 +183,73 @@ def write_outputs(text_path: Path, json_path: Path, result: dict) -> None:
 
 def transcribe_file(media_path: Path, output_dir: Path, model: "WhisperModel", args: argparse.Namespace) -> int:
     """
-    指定された単一のメディアファイルを faster-whisper で文字起こし処理します。
+    指定された単一のメディアファイルを faster-whisper で文字起こし処理します（VADフィルタ付き）。
     """
     active_device = select_device(args.device)
+    start_time_all = time.time()
+
+    from faster_whisper.audio import decode_audio
+    print(f"Loading audio file: {media_path}", flush=True)
+    start_load = time.time()
+    audio = decode_audio(str(media_path), sampling_rate=16000)
+    print(f"Audio loaded in {time.time() - start_load:.2f} seconds. Shape: {audio.shape}", flush=True)
+
+    # 30秒ウィンドウごとの RMS（音量）を計算し、VAD（無音検出）用のリストを作成
+    sr = 16000
+    chunk_size = sr * 30
+    num_chunks = int(np.ceil(len(audio) / chunk_size))
+    silent_chunks = set()
+
+    for i in range(num_chunks):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, len(audio))
+        chunk = audio[start_idx:end_idx]
+        if len(chunk) > 0:
+            rms = np.sqrt(np.mean(chunk ** 2))
+            if rms < 0.018:
+                silent_chunks.add(i)
+
+    print(f"VAD detected {len(silent_chunks)} silent chunks out of {num_chunks} total.", flush=True)
 
     # 推論設定の構築
     decode_options = {
         "task": args.task,
         "beam_size": args.beam_size,
         "condition_on_previous_text": False,  # 幻覚ループの伝染を防ぐ
-        "vad_filter": True,  # 内蔵の Silero VAD を使用して無音区間をフィルタリング
-        "batch_size": 8,  # バッチサイズを 8 に設定して推論を高速化
+        "vad_filter": False,  # 私たちのカスタム RMS VAD フィルタを使用するため、内蔵 VAD はオフにします。
     }
     if args.language.lower() != "auto":
         decode_options["language"] = args.language
 
     print("Starting Whisper transcription...", flush=True)
-    segments, info = model.transcribe(str(media_path), **decode_options)
+    segments, info = model.transcribe(audio, **decode_options)
 
     print(f"Detected language '{info.language}' with probability {info.language_probability:.2f}", flush=True)
 
     result_segments = []
+    filtered_count = 0
+
     for segment in segments:
+        chunk_idx = int(segment.start // 30)
+        # 無音区間に分類された chunk 内の発言はハルシネーション（幻覚）としてフィルタアウトする
+        if chunk_idx in silent_chunks:
+            filtered_count += 1
+            continue
+
+        text = segment.text.strip()
+        if not text:
+            continue
+
         # 進捗表示用に出力
-        print(f"[{format_seconds(segment.start)} -> {format_seconds(segment.end)}] {segment.text}", flush=True)
+        print(f"[{format_seconds(segment.start)} -> {format_seconds(segment.end)}] {text}", flush=True)
         result_segments.append({
             "id": len(result_segments),
             "start": segment.start,
             "end": segment.end,
-            "text": segment.text.strip(),
+            "text": text,
         })
+
+    print(f"Filtered out {filtered_count} hallucinated segments in silent zones.", flush=True)
 
     full_text = " ".join([seg["text"] for seg in result_segments])
     result = {
@@ -224,7 +262,8 @@ def transcribe_file(media_path: Path, output_dir: Path, model: "WhisperModel", a
     text_path, json_path = build_output_paths(output_dir, media_path)
     write_outputs(text_path, json_path, result)
 
-    print(f"Success! output={text_path} (device={active_device}, compute={args.compute_type})", flush=True)
+    elapsed_time = time.time() - start_time_all
+    print(f"Success! output={text_path} (device={active_device}, compute={args.compute_type}) - Time taken: {elapsed_time:.2f} seconds", flush=True)
     return 0
 
 
