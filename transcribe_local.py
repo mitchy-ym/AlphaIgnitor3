@@ -81,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="Beam search size.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="Batch size for parallel chunk transcription (only used in batched inference).",
+    )
     return parser
 
 
@@ -181,9 +187,9 @@ def write_outputs(text_path: Path, json_path: Path, result: dict) -> None:
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def transcribe_file(media_path: Path, output_dir: Path, model: "WhisperModel", args: argparse.Namespace) -> int:
+def transcribe_file(media_path: Path, output_dir: Path, model: "BatchedInferencePipeline", args: argparse.Namespace) -> int:
     """
-    指定された単一のメディアファイルを faster-whisper で文字起こし処理します（VADフィルタ付き）。
+    指定された単一のメディアファイルを faster-whisper の BatchedInferencePipeline で文字起こし処理します（VADフィルタ付き）。
     """
     active_device = select_device(args.device)
     start_time_all = time.time()
@@ -216,13 +222,13 @@ def transcribe_file(media_path: Path, output_dir: Path, model: "WhisperModel", a
         "task": args.task,
         "beam_size": args.beam_size,
         "condition_on_previous_text": False,  # 幻覚ループの伝染を防ぐ
-        "vad_filter": False,  # 私たちのカスタム RMS VAD フィルタを使用するため、内蔵 VAD はオフにします。
+        "vad_filter": True,  # BatchedInferencePipeline は内部で VAD を使用してチャンク分割するため True に設定します。
     }
     if args.language.lower() != "auto":
         decode_options["language"] = args.language
 
-    print("Starting Whisper transcription...", flush=True)
-    segments, info = model.transcribe(audio, **decode_options)
+    print(f"Starting batched Whisper transcription (batch_size={args.batch_size})...", flush=True)
+    segments, info = model.transcribe(audio, batch_size=args.batch_size, **decode_options)
 
     print(f"Detected language '{info.language}' with probability {info.language_probability:.2f}", flush=True)
 
@@ -288,14 +294,16 @@ def run_transcribe_worker(args: argparse.Namespace) -> int:
         print(f"Batch transcription completed. Total: {total}, Processed: 0, Skipped: {total}", flush=True)
         return 0
 
-    from faster_whisper import WhisperModel
+    from faster_whisper import WhisperModel, BatchedInferencePipeline
     active_device = select_device(args.device)
     print(f"Loading faster-whisper model '{args.model}' on {active_device} (compute_type={args.compute_type})...", flush=True)
-    model = WhisperModel(
+    model_raw = WhisperModel(
         args.model,
         device=active_device,
         compute_type=args.compute_type
     )
+    # 並列度を高めてGPU使用率を向上させるため、BatchedInferencePipelineでラップ
+    model = BatchedInferencePipeline(model=model_raw)
 
     for i, path in enumerate(media_paths, 1):
         file_key = path.name

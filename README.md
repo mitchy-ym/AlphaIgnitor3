@@ -81,7 +81,7 @@ python youtube_live_audio_downloader.py "@ChannelHandle" --cookies-from-browser 
 
 **特徴:**
 * **モデルは起動時に1回だけメモリにロード**され、複数ファイル間で使い回されるためバッチ処理が非常に高速です。
-* バッチサイズとして `8`（`batch_size=8`）が指定されており、GPUの処理効率が最大化されています。
+* **BatchedInferencePipeline による並列推論**が組み込まれており、複数の音声チャンクを同時にバッチ処理（既定: 16チャンク並列）することで GPU 使用率を高め、スループットを劇的に向上させています。
 
 ```powershell
 python transcribe_local.py downloads
@@ -100,6 +100,7 @@ python transcribe_local.py downloads --device cuda --compute-type float16
 - `--language`: `ja` などの言語ヒント、または `auto`
 - `--compute-type`: `auto`, `int8`, `float16`, `int8_float16`, `float32` (GPU で実行する場合は `float16` または `int8_float16` が推奨されます。既定: `float16`)
 - `--task`: `transcribe` または `translate`
+- `--batch-size`: 並列処理するチャンク数。数値を大きくすると GPU 使用率と処理速度が上がりますが、メモリ消費量が増加します（既定: `16`）
 
 音声ファイルを直接指定する例:
 
