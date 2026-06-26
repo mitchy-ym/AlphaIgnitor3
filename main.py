@@ -43,6 +43,11 @@ def setup_parsers() -> argparse.ArgumentParser:
         help="ブラウザからCookieを読み込んで認証動画を処理します (例: chrome, edge, firefox)"
     )
     download_parser.add_argument(
+        "--cookies",
+        default=None,
+        help="Netscape形式のCookieファイルパス (例: cookies/cookies.txt)。指定しない場合、cookies/cookies.txtが存在すれば自動的に読み込みます。"
+    )
+    download_parser.add_argument(
         "--ffmpeg-location",
         default=None,
         help="ffmpegバイナリのパス (システム環境変数に通っていない場合に使用)"
@@ -50,7 +55,15 @@ def setup_parsers() -> argparse.ArgumentParser:
     download_parser.add_argument(
         "--verbose-progress",
         action="store_true",
-        help="従来の標準出力テキストによる進捗ログ（[PROGRESS]等）を表示します。"
+        dest="verbose_progress",
+        default=True,
+        help="従来の標準出力テキストによる進捗ログ（[PROGRESS]等）を表示します（デフォルト）。"
+    )
+    download_parser.add_argument(
+        "--no-verbose-progress", "--quiet", "-q",
+        action="store_false",
+        dest="verbose_progress",
+        help="進捗ログ（[INFO]や[PROGRESS]等）の標準出力を無効にし、プログレスバー表示にします。"
     )
     download_parser.add_argument(
         "-w", "--max-workers",
@@ -181,6 +194,11 @@ def setup_parsers() -> argparse.ArgumentParser:
         help="年齢制限などを回避するためにブラウザからCookieを読み込む (例: chrome, edge, firefox)"
     )
     pipeline_parser.add_argument(
+        "--cookies",
+        default=None,
+        help="Netscape形式のCookieファイルパス (例: cookies/cookies.txt)。指定しない場合、cookies/cookies.txtが存在すれば自動的に読み込みます。"
+    )
+    pipeline_parser.add_argument(
         "--ffmpeg-location",
         default=None,
         help="ffmpegバイナリのパス (システム環境変数に通っていない場合に使用)"
@@ -188,7 +206,20 @@ def setup_parsers() -> argparse.ArgumentParser:
     pipeline_parser.add_argument(
         "--verbose-progress",
         action="store_true",
-        help="従来の標準出力テキストによる進捗ログ（[PROGRESS]等）を表示します。"
+        dest="verbose_progress",
+        default=True,
+        help="従来の標準出力テキストによる進捗ログ（[PROGRESS]等）を表示します（デフォルト）。"
+    )
+    pipeline_parser.add_argument(
+        "--no-verbose-progress", "--quiet", "-q",
+        action="store_false",
+        dest="verbose_progress",
+        help="進捗ログ（[INFO]や[PROGRESS]等）の標準出力を無効にし、プログレスバー表示にします。"
+    )
+    pipeline_parser.add_argument(
+        "--check-consistency",
+        action="store_true",
+        help="YouTubeの動画一覧と、ローカルのキャッシュ・音声ファイル・文字起こし結果（transcriptsフォルダ）の整合性を確認します。"
     )
     pipeline_parser.add_argument(
         "-w", "--max-workers",

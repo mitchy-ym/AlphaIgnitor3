@@ -8,7 +8,7 @@ from pathlib import Path
 import yt_dlp
 from tqdm import tqdm
 
-SHOW_PROGRESS_TEXT = False
+SHOW_PROGRESS_TEXT = True
 
 
 def get_timestamp() -> str:
@@ -92,7 +92,7 @@ def save_cache(cache_file: Path, cache_data: dict):
         log_warn(f"キャッシュファイルの保存に失敗しました: {e}")
 
 
-def get_live_videos(channel_handle: str, cookies_browser: str | None) -> list[dict]:
+def get_live_videos(channel_handle: str, cookies_browser: str | None, cookie_file: str | Path | None = None) -> list[dict]:
     # @から始まるハンドルであるか確認し、URLを構築
     # YouTubeの配信アーカイブ一覧ページ: https://www.youtube.com/@ChannelHandle/streams
     handle = channel_handle if channel_handle.startswith("@") else f"@{channel_handle}"
@@ -108,6 +108,8 @@ def get_live_videos(channel_handle: str, cookies_browser: str | None) -> list[di
     }
     if cookies_browser:
         ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
+    elif cookie_file:
+        ydl_opts["cookiefile"] = str(cookie_file)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
@@ -195,7 +197,8 @@ def download_and_extract(
     current_index: int,
     total_count: int,
     pbar_position: int | None = None,
-    debug: bool = False
+    debug: bool = False,
+    cookie_file: str | Path | None = None
 ) -> tuple[bool, bool | None, Path | None]:
     video_id = video["id"]
     title = video["title"]
@@ -244,6 +247,8 @@ def download_and_extract(
 
     if cookies_browser:
         ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
+    elif cookie_file:
+        ydl_opts["cookiefile"] = str(cookie_file)
     if ffmpeg_location:
         ydl_opts["ffmpeg_location"] = ffmpeg_location
 
@@ -302,14 +307,21 @@ def run_downloader(args: argparse.Namespace) -> int:
     global SHOW_PROGRESS_TEXT
     SHOW_PROGRESS_TEXT = args.verbose_progress
 
-    # パイプライン指示があれば、統合パイプラインを起動する
-    if getattr(args, "transcribe", False):
+    # パイプライン指示、または整合性確認指示があれば、統合パイプラインを起動する
+    if getattr(args, "transcribe", False) or getattr(args, "check_consistency", False):
         from pipeline import run_pipeline
         return run_pipeline(args)
 
+    # Cookieファイルの決定
+    cookie_file = getattr(args, "cookies", None)
+    if not cookie_file and not getattr(args, "cookies_from_browser", None):
+        default_cookies = Path("cookies/cookies.txt")
+        if default_cookies.exists():
+            cookie_file = str(default_cookies)
+
     # 1. 動画一覧の取得
     try:
-        videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser)
+        videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser, cookie_file=cookie_file)
     except Exception as e:
         log_error(0, 0, f"エラーが発生したため処理を中断します: {e}")
         if getattr(args, "debug", False):
@@ -393,7 +405,8 @@ def run_downloader(args: argparse.Namespace) -> int:
                 current_index=idx,
                 total_count=len(target_videos),
                 pbar_position=pbar_pos,
-                debug=args.debug
+                debug=args.debug,
+                cookie_file=cookie_file
             )
         finally:
             if pbar_pos is not None:
@@ -471,6 +484,11 @@ def main():
         help="年齢制限などを回避するためにブラウザからCookieを読み込む (例: chrome, edge, firefox)"
     )
     parser.add_argument(
+        "--cookies",
+        default=None,
+        help="Netscape形式のCookieファイルパス (例: cookies/cookies.txt)。指定しない場合、cookies/cookies.txtが存在すれば自動的に読み込みます。"
+    )
+    parser.add_argument(
         "--ffmpeg-location",
         default=None,
         help="ffmpegバイナリのパス (システム環境変数に通っていない場合に使用)"
@@ -478,7 +496,20 @@ def main():
     parser.add_argument(
         "--verbose-progress",
         action="store_true",
-        help="従来の標準出力テキストによる進捗ログ（[PROGRESS]等）を表示します。"
+        dest="verbose_progress",
+        default=True,
+        help="従来の標準出力テキストによる進捗ログ（[PROGRESS]等）を表示します（デフォルト）。"
+    )
+    parser.add_argument(
+        "--no-verbose-progress", "--quiet", "-q",
+        action="store_false",
+        dest="verbose_progress",
+        help="進捗ログ（[INFO]や[PROGRESS]等）の標準出力を無効にし、プログレスバー表示にします。"
+    )
+    parser.add_argument(
+        "--check-consistency",
+        action="store_true",
+        help="YouTubeの動画一覧と、ローカルのキャッシュ・音声ファイル・文字起こし結果（transcriptsフォルダ）の整合性を確認します。"
     )
     parser.add_argument(
         "-w", "--max-workers",

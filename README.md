@@ -5,8 +5,9 @@
 Ryzen / Radeon GPU を搭載した AMD 環境 (ROCm) で `faster-whisper` による高速な文字起こしを行うためのセットアップ手順です。
 
 ### 1-1. 必須要件
-- OS: Windows 10/11
+- OS: Windows 10/11 または Linux
 - AMD GPU (RDNA 3/3.5 アーキテクチャの iGPU/dGPU, 例: Radeon 780M / 890M / RX 7000以上)
+- **JavaScript 実行環境**: YouTubeのダウンロード処理（n-parameter難読化チャレンジの解除）を行うために、システムに **[Deno](https://deno.com/)**（推奨）または Node.js がインストールされ、PATH に追加されている必要があります。
 - 仮想環境の構築 (推奨)
   ```powershell
   python -m venv venv
@@ -89,9 +90,11 @@ python youtube_live_audio_downloader.py "@ChannelHandle" --cookies-from-browser 
 - `-b, --bitrate`: 音声のビットレート (既定: `128k`)
 - `-o, --output`: 保存先フォルダパス (既定: `./downloads/[チャンネル名]/`)
 - `--cookies-from-browser`: メンバーシップ限定・年齢制限・非公開動画の回避用にブラウザからCookieを読み込む (例: `chrome`, `edge`, `firefox`)
+- `--cookies`: Netscape形式のCookieファイルパス (例: `cookies/cookies.txt`)。指定がない場合、`cookies/cookies.txt` が存在すれば自動的に読み込みます。
 - `--ffmpeg-location`: ffmpegバイナリのパス (システム環境変数に通っていない場合)
 - `-w, --max-workers`: 最大同時ダウンロード数 (既定: `2`)
-- `--verbose-progress`: 従来の標準出力テキスト（[PROGRESS]等）による進捗ログ出力を有効にします（未指定時はプログレスバーによる表示となります）
+- `--no-verbose-progress`, `--quiet`, `-q`: 進捗ログ（[INFO]や[PROGRESS]等）の標準出力を無効にし、プログレスバー表示に切り替えます（既定では標準出力テキスト表示がONになっています）
+- `--check-consistency`: YouTubeの動画一覧と、ローカルのキャッシュ・音声ファイル・文字起こし結果（transcriptsフォルダ）の整合性を確認します。また、「キャッシュ済・文字起こし無」の動画が見つかった場合、それらを一括で再処理（再ダウンロードと文字起こし）するかどうかを対話式で確認し、Yesの場合は再試行を実行します。
 - `--debug`: 詳細なログを出力する
 
 ## 3-2. ダウンロードと文字起こし（トランスクリプション）の統合実行 (単体スクリプト実行時)
@@ -115,6 +118,8 @@ python youtube_live_audio_downloader.py "@ChannelHandle" --transcribe --transcri
 - `--transcribe-compute-type`: 計算精度（既定: `float16`）
 - `--transcribe-output-dir`: 文字起こしファイルの出力先（既定: `transcripts`）
 - `--transcribe-delete-audio`: 文字起こし完了後に元の音声ファイルを自動で削除します。
+- `--check-consistency`: ダウンロードと文字起こしの整合性確認レポートを出力し、キャッシュ済・文字起こし無の動画があれば再処理を対話式で実行します。
+- `--cookies`: Netscape形式のCookieファイルパス。既定では `cookies/cookies.txt` が自動的に読み込まれます。
 
 
 

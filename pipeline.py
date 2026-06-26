@@ -20,17 +20,176 @@ from youtube_live_audio_downloader import (
     log_success
 )
 
+def check_consistency_report(args: argparse.Namespace, videos: list[dict], channel_title: str, downloaded_ids: set[str], output_dir: Path, t_out_dir: Path) -> tuple[int, list[str]]:
+    print(f"\n========================================================")
+    print(f" 整合性確認レポート: {channel_title} ({args.channel_handle})")
+    print(f"========================================================\n")
+
+    from transcribe_local import MEDIA_EXTENSIONS
+
+    youtube_video_ids = {v["id"] for v in videos}
+    video_map = {v["id"]: v for v in videos}
+
+    # 1. transcriptsフォルダ内のファイルを解析
+    existing_files = []
+    if t_out_dir.exists():
+        existing_files = [p for p in t_out_dir.iterdir() if p.is_file()]
+
+    # 動画IDごとの文字起こしファイル存在状況
+    # v_id -> {"txt": path/None, "json": path/None}
+    transcript_status = {}
+    for v_id in youtube_video_ids:
+        transcript_status[v_id] = {"txt": None, "json": None}
+
+    for path in existing_files:
+        stem = path.stem
+        for v_id in youtube_video_ids:
+            if stem.endswith(f"_{v_id}"):
+                if path.suffix == ".txt":
+                    transcript_status[v_id]["txt"] = path
+                elif path.suffix == ".json":
+                    transcript_status[v_id]["json"] = path
+                break
+
+    # 2. downloadsフォルダ内の音声ファイルを解析
+    # v_id -> [audio_paths]
+    audio_status = {v_id: [] for v_id in youtube_video_ids}
+    if output_dir.exists():
+        for path in output_dir.iterdir():
+            if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS:
+                for v_id in youtube_video_ids:
+                    if f"_{v_id}" in path.name:
+                        audio_status[v_id].append(path)
+                        break
+
+    # 3. 各動画の状態を分類
+    complete = []           # .txt と .json の両方が存在
+    partial = []            # .txt または .json の片方のみ存在
+    only_audio = []         # 音声ファイルはあるが、文字起こしが全くない
+    cache_but_no_trans = [] # キャッシュにあるが、文字起こしファイルがない
+    trans_but_no_cache = [] # 文字起こしはあるが、キャッシュにない
+    unprocessed = []        # キャッシュなし・音声なし・文字起こしなし
+
+    for v_id in youtube_video_ids:
+        v = video_map[v_id]
+        status = transcript_status[v_id]
+        has_txt = status["txt"] is not None
+        has_json = status["json"] is not None
+        has_audio = len(audio_status[v_id]) > 0
+        in_cache = v_id in downloaded_ids
+
+        if has_txt and has_json:
+            complete.append(v_id)
+            if not in_cache:
+                trans_but_no_cache.append(v_id)
+        elif has_txt or has_json:
+            partial.append((v_id, has_txt, has_json))
+        elif has_audio:
+            only_audio.append(v_id)
+        elif in_cache:
+            cache_but_no_trans.append(v_id)
+        else:
+            unprocessed.append(v_id)
+
+    # 4. キャッシュにあるがYouTube上にない動画の検出
+    orphaned_cache_ids = downloaded_ids - youtube_video_ids
+
+    # 5. レポートの出力
+    print(f"【概要統計】")
+    print(f"  - YouTube上の公開アーカイブ総数 : {len(videos)} 本")
+    print(f"  - 文字起こし完了 (.txt & .json) : {len(complete)} 本")
+    print(f"  - 未処理（新規処理対象）        : {len(unprocessed)} 本")
+    print(f"  - 音声あり・文字起こし未実行    : {len(only_audio)} 本")
+    print(f"  - 文字起こしの一部欠損          : {len(partial)} 本")
+    print(f"  - キャッシュ済・文字起こし無    : {len(cache_but_no_trans)} 本 (※エラーでスキップされた可能性あり)")
+    print(f"  - 文字起こし有・キャッシュ未登録 : {len(trans_but_no_cache)} 本")
+    print(f"  - キャッシュ内のみ存在（非公開等）: {len(orphaned_cache_ids)} 本")
+    print(f"--------------------------------------------------------")
+
+    # 詳細レポートの出力
+    has_issues = False
+
+    if partial:
+        has_issues = True
+        print(f"\n[⚠️ 警告] 文字起こしファイルの一部欠損 ({len(partial)} 件):")
+        for v_id, has_txt, has_json in partial:
+            v = video_map[v_id]
+            missing = "JSON" if has_txt else "TXT"
+            print(f"  - ID: {v_id} | {missing}ファイルが不足しています | URL: {v['url']}")
+            print(f"    タイトル: {v['title']}")
+
+    if only_audio:
+        has_issues = True
+        print(f"\n[ℹ️ 情報] 音声ファイルは存在するが文字起こしがありません ({len(only_audio)} 件):")
+        for v_id in only_audio:
+            v = video_map[v_id]
+            audios = ", ".join(p.name for p in audio_status[v_id])
+            print(f"  - ID: {v_id} | 音声ファイル: {audios} | URL: {v['url']}")
+            print(f"    タイトル: {v['title']}")
+
+    if trans_but_no_cache:
+        has_issues = True
+        print(f"\n[⚠️ 警告] 文字起こしは完了していますが、キャッシュファイルに登録されていません ({len(trans_but_no_cache)} 件):")
+        print(f"  ※ 次回の実行時に再ダウンロードされる可能性があります。")
+        for v_id in trans_but_no_cache:
+            v = video_map[v_id]
+            print(f"  - ID: {v_id} | URL: {v['url']}")
+            print(f"    タイトル: {v['title']}")
+
+    if cache_but_no_trans:
+        print(f"\n[ℹ️ 参考] キャッシュに登録されていますが、文字起こしがありません ({len(cache_but_no_trans)} 件):")
+        print(f"  ※ 年齢制限、非公開、メンバー限定動画など、過去の処理時にスキップされた可能性があります。")
+        for v_id in cache_but_no_trans:
+            v = video_map[v_id]
+            print(f"  - ID: {v_id} | URL: {v['url']}")
+            print(f"    タイトル: {v['title']}")
+
+    if orphaned_cache_ids:
+        print(f"\n[ℹ️ 参考] キャッシュ内にのみ存在する動画ID ({len(orphaned_cache_ids)} 件):")
+        print(f"  ※ YouTube上で非公開・削除されたか、Cookieなしでアクセスできないメンバー限定動画の可能性があります。")
+        for v_id in sorted(orphaned_cache_ids):
+            print(f"  - ID: {v_id}")
+
+    if not has_issues:
+        print(f"\n[✅ 正常] 重大な不整合（一部欠損やキャッシュ未登録など）は検出されませんでした。")
+
+    print(f"========================================================\n")
+
+    retry_video_ids = []
+    if cache_but_no_trans:
+        try:
+            print(f"\n[❓ 提案] キャッシュ済・文字起こし無の動画が {len(cache_but_no_trans)} 件あります。")
+            print("これらは以前の実行で年齢制限やメンバー限定、非公開などの原因でエラー終了した可能性があります。")
+            response = input("これらの動画に対して再処理（再ダウンロード・文字起こし）を試行しますか？ (y/N): ").strip().lower()
+            if response in ("y", "yes"):
+                retry_video_ids = cache_but_no_trans
+        except KeyboardInterrupt:
+            print("\n処理がキャンセルされました。")
+            return 0, []
+        except Exception:
+            pass
+
+    return 0, retry_video_ids
+
+
 def run_pipeline(args: argparse.Namespace) -> int:
     """
     ダウンロード -> デコード -> 文字起こしの3ステージ非同期パイプラインを実行します。
     """
     # 進捗ログ表示の設定を反映
     import youtube_live_audio_downloader
-    youtube_live_audio_downloader.SHOW_PROGRESS_TEXT = getattr(args, "verbose_progress", False)
+    youtube_live_audio_downloader.SHOW_PROGRESS_TEXT = getattr(args, "verbose_progress", True)
+
+    # Cookieファイルの決定
+    cookie_file = getattr(args, "cookies", None)
+    if not cookie_file and not getattr(args, "cookies_from_browser", None):
+        default_cookies = Path("cookies/cookies.txt")
+        if default_cookies.exists():
+            cookie_file = str(default_cookies)
 
     # 1. 動画一覧の取得
     try:
-        videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser)
+        videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser, cookie_file=cookie_file)
     except Exception as e:
         log_error(0, 0, f"エラーが発生したため処理を中断します: {e}")
         if getattr(args, "debug", False):
@@ -57,34 +216,52 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     downloaded_ids = set(cache_data.get("downloaded_ids", []))
     
-    # すでに文字起こし結果（.txt または .json）が出力先フォルダに存在する動画IDを検出する
-    t_out_dir = Path(args.transcribe_output_dir)
-    completed_video_ids = set()
-    if t_out_dir.exists():
-        existing_files = {p.name for p in t_out_dir.iterdir() if p.is_file() and p.suffix in (".txt", ".json")}
+    is_retry_run = False
+    target_videos = []
+
+    # 整合性確認オプションの処理
+    if getattr(args, "check_consistency", False):
+        t_out_dir = Path(args.transcribe_output_dir)
+        exit_code, retry_video_ids = check_consistency_report(args, videos, channel_title, downloaded_ids, output_dir, t_out_dir)
+        if exit_code != 0:
+            return exit_code
+        if retry_video_ids:
+            target_videos = [v for v in videos if v["id"] in retry_video_ids]
+            is_retry_run = True
+        else:
+            return 0
+
+    if not is_retry_run:
+        # すでに文字起こし結果（.txt または .json）が出力先フォルダに存在する動画IDを検出する
+        t_out_dir = Path(args.transcribe_output_dir)
+        completed_video_ids = set()
+        if t_out_dir.exists():
+            existing_files = {p.name for p in t_out_dir.iterdir() if p.is_file() and p.suffix in (".txt", ".json")}
+            for v in videos:
+                v_id = v["id"]
+                # アンダースコアの後にIDが続く形式（例: ..._ID.txt）をチェック
+                for fname in existing_files:
+                    if f"_{v_id}" in fname:
+                        completed_video_ids.add(v_id)
+                        break
+
+        # すでに処理済みの動画をフィルタリング（ダウンロードキャッシュにある、またはすでに文字起こしテキストが存在する）
         for v in videos:
             v_id = v["id"]
-            # アンダースコアの後にIDが続く形式（例: ..._ID.txt）をチェック
-            for fname in existing_files:
-                if f"_{v_id}" in fname:
-                    completed_video_ids.add(v_id)
-                    break
+            if v_id in downloaded_ids or v_id in completed_video_ids:
+                continue
+            target_videos.append(v)
+        
+        skipped_count = len(videos) - len(target_videos)
+        if getattr(args, "max_downloads", None) is not None:
+            target_videos = target_videos[:args.max_downloads]
 
-    # すでに処理済みの動画をフィルタリング（ダウンロードキャッシュにある、またはすでに文字起こしテキストが存在する）
-    target_videos = []
-    for v in videos:
-        v_id = v["id"]
-        if v_id in downloaded_ids or v_id in completed_video_ids:
-            continue
-        target_videos.append(v)
-    
-    skipped_count = len(videos) - len(target_videos)
-    if getattr(args, "max_downloads", None) is not None:
-        target_videos = target_videos[:args.max_downloads]
-
-    log_info(f"設定 - フォーマット: {args.format}, ビットレート: {args.bitrate}, 保存先: {output_dir}")
-    log_info(f"ライブ動画を {len(videos)} 本検出しました。（うち {skipped_count} 本は処理済みのキャッシュによりスキップ）")
-    log_info(f"今回の処理対象: {len(target_videos)} 本")
+        log_info(f"設定 - フォーマット: {args.format}, ビットレート: {args.bitrate}, 保存先: {output_dir}")
+        log_info(f"ライブ動画を {len(videos)} 本検出しました。（うち {skipped_count} 本は処理済みのキャッシュによりスキップ）")
+        log_info(f"今回の処理対象: {len(target_videos)} 本")
+    else:
+        log_info(f"設定 - フォーマット: {args.format}, ビットレート: {args.bitrate}, 保存先: {output_dir}")
+        log_info(f"【再試行モード】キャッシュ済・文字起こし無の動画 {len(target_videos)} 本を再処理します。")
 
     # キューと同期オブジェクトの初期化
     decode_queue = queue.Queue()
@@ -216,7 +393,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     pos_manager = ProgressPositionManager(max_workers)
 
     overall_pbar = None
-    if not getattr(args, "verbose_progress", False):
+    if not getattr(args, "verbose_progress", True):
         overall_pbar = tqdm(
             total=len(target_videos),
             desc="Overall Progress",
@@ -256,7 +433,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             time.sleep(stagger_time)
 
         pbar_pos = None
-        if not getattr(args, "verbose_progress", False):
+        if not getattr(args, "verbose_progress", True):
             pbar_pos = pos_manager.acquire()
 
         try:
@@ -271,7 +448,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 current_index=idx,
                 total_count=len(target_videos),
                 pbar_position=pbar_pos,
-                debug=getattr(args, "debug", False)
+                debug=getattr(args, "debug", False),
+                cookie_file=cookie_file
             )
         finally:
             if pbar_pos is not None:
