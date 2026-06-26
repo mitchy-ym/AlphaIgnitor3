@@ -1,7 +1,10 @@
 import argparse
 import json
 import os
+import queue
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 import numpy as np
@@ -49,8 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         default="turbo",
-        choices=("tiny", "base", "small", "medium", "large", "turbo"),
-        help="Whisper model size.",
+        help="Whisper model size or Hugging Face model repository path.",
     )
     parser.add_argument(
         "--language",
@@ -86,6 +88,28 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=16,
         help="Batch size for parallel chunk transcription (only used in batched inference).",
+    )
+    parser.add_argument(
+        "--delete-audio",
+        action="store_true",
+        help="Delete the input audio/media file after successful transcription.",
+    )
+    parser.add_argument(
+        "--initial-prompt",
+        default="こんにちは。今日はいい天気ですね。本日はよろしくお願いいたします。",
+        help="Initial prompt to guide the transcription style (e.g. for Japanese punctuation).",
+    )
+    parser.add_argument(
+        "--vad-threshold",
+        type=float,
+        default=0.5,
+        help="VAD threshold for speech detection (0.0 to 1.0). (default: 0.5)",
+    )
+    parser.add_argument(
+        "--chunk-duration",
+        type=float,
+        default=600.0,
+        help="Chunk duration in seconds for asynchronous chunking/pipelining. (default: 600.0)",
     )
     return parser
 
@@ -154,6 +178,67 @@ def select_device(device: str) -> str:
     return device
 
 
+def load_whisper_model(model_path: str, device: str, compute_type: str) -> "BatchedInferencePipeline":
+    """WhisperモデルをロードしてBatchedInferencePipelineでラップして返します。"""
+    from faster_whisper import WhisperModel, BatchedInferencePipeline
+    active_device = select_device(device)
+    
+    if "/" in model_path and not Path(model_path).exists():
+        try:
+            from huggingface_hub import snapshot_download
+            print(f"Downloading model '{model_path}' from Hugging Face Hub (this may take a few minutes)...", flush=True)
+            model_path = snapshot_download(repo_id=model_path)
+        except Exception as e:
+            print(f"Warning: Failed to pre-download model using huggingface_hub: {e}. Falling back to default loader.", file=sys.stderr, flush=True)
+            
+    print(f"Loading faster-whisper model '{model_path}' on {active_device} (compute_type={compute_type})...", flush=True)
+    model_raw = WhisperModel(
+        model_path,
+        device=active_device,
+        compute_type=compute_type
+    )
+    return BatchedInferencePipeline(model=model_raw)
+
+
+def build_decode_options(args: argparse.Namespace) -> dict:
+    """argparse.Namespaceからfaster-whisperのtranscribeメソッドに渡すオプションを構築します。"""
+    decode_options = {
+        "task": args.task,
+        "beam_size": args.beam_size,
+        "condition_on_previous_text": False,  # 幻覚ループの伝染を防ぐ
+        "vad_filter": True,  # BatchedInferencePipeline は内部で VAD を使用してチャンク分割するため True に設定
+    }
+    if args.language.lower() != "auto":
+        decode_options["language"] = args.language
+    if args.initial_prompt:
+        decode_options["initial_prompt"] = args.initial_prompt
+
+    vad_params = {}
+    if args.vad_threshold is not None:
+        vad_params["threshold"] = args.vad_threshold
+    if vad_params:
+        decode_options["vad_parameters"] = vad_params
+        
+    return decode_options
+
+
+def detect_silent_chunks(audio_data: np.ndarray, sr: int = 16000, threshold: float = 0.018, window_sec: int = 30) -> set[int]:
+    """音声データから30秒区切りでの無音区間のインデックスを計算します。"""
+    chunk_size = sr * window_sec
+    num_chunks = int(np.ceil(len(audio_data) / chunk_size))
+    silent_chunks = set()
+
+    for i in range(num_chunks):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, len(audio_data))
+        chunk = audio_data[start_idx:end_idx]
+        if len(chunk) > 0:
+            rms = np.sqrt(np.mean(chunk ** 2))
+            if rms < threshold:
+                silent_chunks.add(i)
+    return silent_chunks
+
+
 def build_output_paths(output_dir: Path, media_path: Path) -> tuple[Path, Path]:
     """出力先のテキストファイルと JSON ファイルのパスを構築します。"""
     base_name = media_path.stem
@@ -187,84 +272,234 @@ def write_outputs(text_path: Path, json_path: Path, result: dict) -> None:
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def transcribe_file(media_path: Path, output_dir: Path, model: "BatchedInferencePipeline", args: argparse.Namespace) -> int:
+def get_media_duration(media_path: Path) -> float | None:
+    """ffprobeを使用してメディアファイルの総再生時間（秒）を取得します。失敗した場合は PyAV (av) による取得も試行します。"""
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(media_path)
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        duration_str = result.stdout.strip()
+        if duration_str:
+            return float(duration_str)
+    except Exception as e:
+        print(f"Warning: Failed to get duration with ffprobe: {e}", file=sys.stderr, flush=True)
+
+    # フォールバックとして PyAV のインポートを試行
+    try:
+        import av
+        with av.open(str(media_path)) as container:
+            return float(container.duration) / av.time_base
+    except Exception as e:
+        print(f"Warning: Failed to get duration with PyAV: {e}", file=sys.stderr, flush=True)
+    
+    return None
+
+
+def transcribe_file(media_path: Path, output_dir: Path, model: "BatchedInferencePipeline", args: argparse.Namespace, preloaded_audio: np.ndarray | None = None) -> int:
     """
     指定された単一のメディアファイルを faster-whisper の BatchedInferencePipeline で文字起こし処理します（VADフィルタ付き）。
     """
     active_device = select_device(args.device)
     start_time_all = time.time()
 
-    from faster_whisper.audio import decode_audio
-    print(f"Loading audio file: {media_path}", flush=True)
-    start_load = time.time()
-    audio = decode_audio(str(media_path), sampling_rate=16000)
-    print(f"Audio loaded in {time.time() - start_load:.2f} seconds. Shape: {audio.shape}", flush=True)
+    # GPU実行時のみ非同期プレロード・分割処理を有効にし、CPU実行時はシーケンシャル処理を行う
+    use_async = (active_device == "cuda")
+    total_duration = None
 
-    # 30秒ウィンドウごとの RMS（音量）を計算し、VAD（無音検出）用のリストを作成
-    sr = 16000
-    chunk_size = sr * 30
-    num_chunks = int(np.ceil(len(audio) / chunk_size))
+    if use_async:
+        if preloaded_audio is not None:
+            total_duration = len(preloaded_audio) / 16000
+        else:
+            total_duration = get_media_duration(media_path)
+            if total_duration is None:
+                print(f"Warning: Could not determine total duration of {media_path.name}. Falling back to sequential mode.", file=sys.stderr, flush=True)
+                use_async = False
+
+    # 共通の推論オプションの構築
+    decode_options = build_decode_options(args)
     silent_chunks = set()
-
-    for i in range(num_chunks):
-        start_idx = i * chunk_size
-        end_idx = min((i + 1) * chunk_size, len(audio))
-        chunk = audio[start_idx:end_idx]
-        if len(chunk) > 0:
-            rms = np.sqrt(np.mean(chunk ** 2))
-            if rms < 0.018:
-                silent_chunks.add(i)
-
-    print(f"VAD detected {len(silent_chunks)} silent chunks out of {num_chunks} total.", flush=True)
-
-    # 推論設定の構築
-    decode_options = {
-        "task": args.task,
-        "beam_size": args.beam_size,
-        "condition_on_previous_text": False,  # 幻覚ループの伝染を防ぐ
-        "vad_filter": True,  # BatchedInferencePipeline は内部で VAD を使用してチャンク分割するため True に設定します。
-    }
-    if args.language.lower() != "auto":
-        decode_options["language"] = args.language
-
-    print(f"Starting batched Whisper transcription (batch_size={args.batch_size})...", flush=True)
-    segments, info = model.transcribe(audio, batch_size=args.batch_size, **decode_options)
-
-    print(f"Detected language '{info.language}' with probability {info.language_probability:.2f}", flush=True)
-
     result_segments = []
     filtered_count = 0
+    detected_language = None
 
-    for segment in segments:
-        chunk_idx = int(segment.start // 30)
-        # 無音区間に分類された chunk 内の発言はハルシネーション（幻覚）としてフィルタアウトする
-        if chunk_idx in silent_chunks:
-            filtered_count += 1
-            continue
+    if use_async:
+        # 非同期で音声ファイルをデコードしつつ文字起こしを実行
+        chunk_duration = getattr(args, "chunk_duration", 600.0)
+        chunks = []
+        curr_start = 0.0
+        chunk_idx = 0
+        while curr_start < total_duration:
+            dur = min(chunk_duration, total_duration - curr_start)
+            chunks.append((chunk_idx, curr_start, dur))
+            curr_start += chunk_duration
+            chunk_idx += 1
 
-        text = segment.text.strip()
-        if not text:
-            continue
+        print(f"Asynchronous processing enabled: splitting {media_path.name} into {len(chunks)} chunks of max {chunk_duration}s.", flush=True)
 
-        # 進捗表示用に出力
-        print(f"[{format_seconds(segment.start)} -> {format_seconds(segment.end)}] {text}", flush=True)
-        result_segments.append({
-            "id": len(result_segments),
-            "start": segment.start,
-            "end": segment.end,
-            "text": text,
-        })
+        class AudioChunk:
+            def __init__(self, index: int, start_time: float, duration: float, audio_data: np.ndarray):
+                self.index = index
+                self.start_time = start_time
+                self.duration = duration
+                self.audio_data = audio_data
 
-    print(f"Filtered out {filtered_count} hallucinated segments in silent zones.", flush=True)
+        class ChunkError:
+            def __init__(self, exception: Exception):
+                self.exception = exception
 
-    full_text = " ".join([seg["text"] for seg in result_segments])
-    result = {
-        "text": full_text.strip(),
-        "language": info.language,
-        "segments": result_segments
-    }
+        chunk_queue = queue.Queue(maxsize=2)
+
+        def audio_loader_worker():
+            try:
+                if preloaded_audio is not None:
+                    sr = 16000
+                    for idx, start_time, duration in chunks:
+                        start_idx = int(start_time * sr)
+                        end_idx = int((start_time + duration) * sr)
+                        chunk_audio = preloaded_audio[start_idx:end_idx]
+                        chunk_queue.put(AudioChunk(idx, start_time, duration, chunk_audio))
+                else:
+                    for idx, start_time, duration in chunks:
+                        cmd = [
+                            "ffmpeg",
+                            "-y",
+                            "-nostdin",
+                            "-ss", f"{start_time:.3f}",
+                            "-t", f"{duration:.3f}",
+                            "-i", str(media_path),
+                            "-f", "s16le",
+                            "-ac", "1",
+                            "-ar", "16000",
+                            "-"
+                        ]
+                        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if process.returncode != 0:
+                            raise RuntimeError(
+                                f"FFmpeg failed decoding chunk starting at {start_time}s: "
+                                f"{process.stderr.decode('utf-8', errors='replace')}"
+                            )
+                        audio_data = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+                        chunk_queue.put(AudioChunk(idx, start_time, duration, audio_data))
+                chunk_queue.put(None)  # EOF
+            except Exception as ex:
+                chunk_queue.put(ChunkError(ex))
+
+        # スレッド起動
+        loader_thread = threading.Thread(target=audio_loader_worker, daemon=True)
+        loader_thread.start()
+
+        print(f"Starting batched Whisper transcription (batch_size={args.batch_size})...", flush=True)
+
+        while True:
+            item = chunk_queue.get()
+            if item is None:
+                break
+            if isinstance(item, ChunkError):
+                raise item.exception
+
+            chunk = item
+
+            # ローカル無音検出
+            chunk_silent_indices = detect_silent_chunks(chunk.audio_data)
+            for relative_idx in chunk_silent_indices:
+                absolute_30s_idx = int(chunk.start_time // 30) + relative_idx
+                silent_chunks.add(absolute_30s_idx)
+
+            chunk_decode_options = decode_options.copy()
+            if args.language.lower() == "auto" and detected_language is not None:
+                chunk_decode_options["language"] = detected_language
+
+            segments, info = model.transcribe(chunk.audio_data, batch_size=args.batch_size, **chunk_decode_options)
+
+            if args.language.lower() == "auto" and detected_language is None:
+                detected_language = info.language
+                print(f"Detected language '{detected_language}' with probability {info.language_probability:.2f} on first chunk.", flush=True)
+
+            for segment in segments:
+                absolute_start = chunk.start_time + segment.start
+                absolute_end = chunk.start_time + segment.end
+                chunk_idx = int(absolute_start // 30)
+
+                if chunk_idx in silent_chunks:
+                    filtered_count += 1
+                    continue
+
+                text = segment.text.strip()
+                if not text:
+                    continue
+
+                print(f"[{format_seconds(absolute_start)} -> {format_seconds(absolute_end)}] {text}", flush=True)
+                result_segments.append({
+                    "id": len(result_segments),
+                    "start": absolute_start,
+                    "end": absolute_end,
+                    "text": text,
+                })
+
+        print(f"Filtered out {filtered_count} hallucinated segments in silent zones.", flush=True)
+
+        full_text = " ".join([seg["text"] for seg in result_segments])
+        result = {
+            "text": full_text.strip(),
+            "language": detected_language or args.language,
+            "segments": result_segments
+        }
+
+    else:
+        # シーケンシャル処理（従来の処理フロー）
+        if preloaded_audio is not None:
+            audio = preloaded_audio
+            print(f"Audio already loaded. Shape: {audio.shape}", flush=True)
+        else:
+            from faster_whisper.audio import decode_audio
+            print(f"Loading audio file: {media_path}", flush=True)
+            start_load = time.time()
+            audio = decode_audio(str(media_path), sampling_rate=16000)
+            print(f"Audio loaded in {time.time() - start_load:.2f} seconds. Shape: {audio.shape}", flush=True)
+
+        # 30秒ウィンドウごとの RMS（音量）を計算し、VAD（無音検出）用のリストを作成
+        silent_chunks = detect_silent_chunks(audio)
+        print(f"VAD detected {len(silent_chunks)} silent chunks out of {int(np.ceil(len(audio)/(16000*30)))} total.", flush=True)
+
+        print(f"Starting batched Whisper transcription (batch_size={args.batch_size})...", flush=True)
+        segments, info = model.transcribe(audio, batch_size=args.batch_size, **decode_options)
+
+        print(f"Detected language '{info.language}' with probability {info.language_probability:.2f}", flush=True)
+
+        for segment in segments:
+            chunk_idx = int(segment.start // 30)
+            if chunk_idx in silent_chunks:
+                filtered_count += 1
+                continue
+
+            text = segment.text.strip()
+            if not text:
+                continue
+
+            print(f"[{format_seconds(segment.start)} -> {format_seconds(segment.end)}] {text}", flush=True)
+            result_segments.append({
+                "id": len(result_segments),
+                "start": segment.start,
+                "end": segment.end,
+                "text": text,
+            })
+
+        print(f"Filtered out {filtered_count} hallucinated segments in silent zones.", flush=True)
+
+        full_text = " ".join([seg["text"] for seg in result_segments])
+        result = {
+            "text": full_text.strip(),
+            "language": info.language,
+            "segments": result_segments
+        }
 
     # 出力ファイルパスの定義と書き出し
+    output_dir.mkdir(parents=True, exist_ok=True)
     text_path, json_path = build_output_paths(output_dir, media_path)
     write_outputs(text_path, json_path, result)
 
@@ -291,25 +526,29 @@ def run_transcribe_worker(args: argparse.Namespace) -> int:
     # 実際に処理を行うファイルがある場合のみモデルをロードする
     target_paths = [p for p in media_paths if p.name not in completed_files]
     if not target_paths:
+        if args.delete_audio:
+            for path in media_paths:
+                try:
+                    print(f"Deleting already transcribed media file: {path}", flush=True)
+                    path.unlink()
+                except Exception as de:
+                    print(f"Failed to delete {path}: {de}", file=sys.stderr, flush=True)
         print(f"Batch transcription completed. Total: {total}, Processed: 0, Skipped: {total}", flush=True)
         return 0
 
-    from faster_whisper import WhisperModel, BatchedInferencePipeline
-    active_device = select_device(args.device)
-    print(f"Loading faster-whisper model '{args.model}' on {active_device} (compute_type={args.compute_type})...", flush=True)
-    model_raw = WhisperModel(
-        args.model,
-        device=active_device,
-        compute_type=args.compute_type
-    )
-    # 並列度を高めてGPU使用率を向上させるため、BatchedInferencePipelineでラップ
-    model = BatchedInferencePipeline(model=model_raw)
+    model = load_whisper_model(args.model, args.device, args.compute_type)
 
     for i, path in enumerate(media_paths, 1):
         file_key = path.name
         if file_key in completed_files:
             print(f"[{i}/{total}] Skipping already transcribed file: {file_key}", flush=True)
             skipped += 1
+            if args.delete_audio:
+                try:
+                    print(f"Deleting already transcribed media file: {path}", flush=True)
+                    path.unlink()
+                except Exception as de:
+                    print(f"Failed to delete {path}: {de}", file=sys.stderr, flush=True)
             continue
 
         print(f"[{i}/{total}] Processing: {file_key}", flush=True)
@@ -319,6 +558,12 @@ def run_transcribe_worker(args: argparse.Namespace) -> int:
                 completed_files.add(file_key)
                 save_cache(output_dir, completed_files)
                 processed += 1
+                if args.delete_audio:
+                    try:
+                        print(f"Deleting transcribed media file: {path}", flush=True)
+                        path.unlink()
+                    except Exception as de:
+                        print(f"Failed to delete {path}: {de}", file=sys.stderr, flush=True)
             else:
                 print(f"[{i}/{total}] Failed transcribing: {file_key} (exit={exit_code})", flush=True)
                 return exit_code
