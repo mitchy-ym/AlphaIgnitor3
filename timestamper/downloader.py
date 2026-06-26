@@ -7,7 +7,7 @@ from tqdm import tqdm
 import argparse
 
 from . import utils
-from .utils import log_info, log_progress, log_success, log_error, log_warn, get_timestamp
+from .utils import log_info, log_progress, log_success, log_error, log_warn, get_timestamp, sanitize_cookie_file
 
 def load_download_cache(cache_file: Path, channel_handle: str) -> dict:
     """ダウンロード済みの動画ID履歴キャッシュを読み込みます。"""
@@ -238,6 +238,9 @@ def run_downloader(args: argparse.Namespace) -> int:
         default_cookies = Path("cookies/cookies.txt")
         if default_cookies.exists():
             cookie_file = str(default_cookies)
+    
+    if cookie_file:
+        sanitize_cookie_file(cookie_file)
 
     # 1. 動画一覧の取得
     try:

@@ -14,7 +14,8 @@ from .utils import (
     log_info,
     log_warn,
     log_error,
-    log_success
+    log_success,
+    sanitize_cookie_file
 )
 from .downloader import (
     get_live_videos,
@@ -39,6 +40,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
         default_cookies = Path("cookies/cookies.txt")
         if default_cookies.exists():
             cookie_file = str(default_cookies)
+            
+    if cookie_file:
+        sanitize_cookie_file(cookie_file)
 
     # 1. 動画一覧の取得
     try:

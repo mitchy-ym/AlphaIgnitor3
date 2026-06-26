@@ -107,3 +107,79 @@ def get_media_duration(media_path: Path) -> float | None:
         log_warn(f"Failed to get duration with PyAV: {e}")
     
     return None
+
+
+def sanitize_cookie_file(cookie_file_path: str | Path | None) -> None:
+    """Netscape形式のCookieファイルに含まれる破損（ヌルバイト）や、
+    Python 3.11のhttp.cookiejarによるアサーションエラー（AssertionError）を回避するために、
+    Cookieファイルを読み込んで自動的にクリーンアップします。
+    """
+    if not cookie_file_path:
+        return
+    path = Path(cookie_file_path)
+    if not path.exists() or not path.is_file():
+        return
+
+    try:
+        # まずバイナリとして読み込む
+        with open(path, "rb") as f:
+            content = f.read()
+
+        # ヌルバイトを取り除く
+        content_clean = content.replace(b"\x00", b"")
+
+        try:
+            text = content_clean.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content_clean.decode("latin-1", errors="ignore")
+
+        lines = text.splitlines()
+        fixed_lines = []
+        modified = False
+        
+        # ヌルバイトの除去があった場合、またはファイルに変化がある場合は modified とする
+        if len(content_clean) != len(content):
+            modified = True
+
+        for line in lines:
+            if not line.strip():
+                fixed_lines.append(line)
+                continue
+            if line.startswith("#"):
+                fixed_lines.append(line)
+                continue
+
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                domain = parts[0]
+                domain_specified = parts[1].upper()  # TRUE / FALSE
+
+                if domain_specified not in ("TRUE", "FALSE"):
+                    modified = True
+                    continue
+
+                initial_dot = domain.startswith(".")
+
+                # http.cookiejar.py のアサーションバグ対策:
+                # 2列目が TRUE の場合はドメインの先頭がドットで始まっていなければならない
+                # 2列目が FALSE の場合はドメインの先頭がドットで始まってはならない
+                if domain_specified == "TRUE" and not initial_dot:
+                    parts[0] = "." + domain
+                    modified = True
+                elif domain_specified == "FALSE" and initial_dot:
+                    parts[0] = domain[1:]
+                    modified = True
+
+                fixed_lines.append("\t".join(parts))
+            else:
+                # 不正なフィールド数の行を除去
+                modified = True
+
+        if modified:
+            log_info(f"Cookieファイルを自動クリーンアップしました: {path.name}")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(fixed_lines) + "\n")
+
+    except Exception as e:
+        log_warn(f"Cookieファイルのクリーンアップ処理中にエラーが発生しました: {e}")
+

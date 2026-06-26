@@ -41,14 +41,14 @@ def add_download_arguments(parser: argparse.ArgumentParser):
         "--verbose-progress",
         action="store_true",
         dest="verbose_progress",
-        default=True,
-        help="従来の標準出力テキストによる進捗ログ（[PROGRESS]等）を表示します（デフォルト）。"
+        default=False,
+        help="従来の標準出力テキストによる進捗ログ（[PROGRESS]等）を表示します。"
     )
     parser.add_argument(
         "--no-verbose-progress", "--quiet", "-q",
         action="store_false",
         dest="verbose_progress",
-        help="進捗ログ（[INFO]や[PROGRESS]等）の標準出力を無効にし、プログレスバー表示にします。"
+        help="進捗ログ（[INFO]や[PROGRESS]等）の標準出力を無効にし、プログレスバー表示にします（デフォルト）。"
     )
     parser.add_argument(
         "-w", "--max-workers",
