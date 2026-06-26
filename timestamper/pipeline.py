@@ -66,6 +66,14 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # 2.5. トランスクリプト出力フォルダの解決（配信者ごとにフォルダを分ける）
+    t_out_base = Path(args.transcribe_output_dir)
+    if t_out_base.name != safe_channel_title:
+        t_out_dir_path = t_out_base / safe_channel_title
+    else:
+        t_out_dir_path = t_out_base
+    args.transcribe_output_dir = str(t_out_dir_path)
+    
     # 3. キャッシュファイルの読み込み
     safe_handle_filename = "".join(c for c in args.channel_handle if c.isalnum() or c in ("_", "-"))
     cache_file = output_dir / f"download_cache_{safe_handle_filename}.json"
