@@ -42,13 +42,34 @@ Ryzen / Radeon GPU を搭載した AMD 環境 (ROCm) で `faster-whisper` によ
 - `HF_HUB_DISABLE_SYMLINKS_WARNING=1` (Windows上のHFシンボリックリンク警告抑止)
 - `KMP_DUPLICATE_LIB_OK=TRUE` (OpenMP ランタイム競合回避)
 
-## 2. 配信アーカイブ（音声）を一括ダウンロードする
+## 2. 統一エントリーポイント `main.py` の使用方法 (推奨)
+
+本プロジェクトの各機能は、統合 CLI エントリーポイントである [main.py](file:///workspace/TimeStamper/main.py) から実行することを推奨します。
+
+```powershell
+# ヘルプを表示する
+python main.py --help
+
+# ① 音声のダウンロードのみ実行
+python main.py download "@ChannelHandle"
+
+# ② ダウンロード + デコード + 文字起こしの3ステージ非同期パイプラインを実行 (推奨)
+python main.py pipeline "@ChannelHandle" --transcribe-device cuda --transcribe-model turbo
+
+# ③ ローカルの音声ファイルの文字起こしのみを実行
+python main.py transcribe ./downloads/ChannelName --device cuda
+```
+
+各サブコマンドのオプション詳細を確認するには、`python main.py [サブコマンド] --help` を実行してください。
+
+
+## 3. 配信アーカイブ（音声）を一括ダウンロードする (単体実行)
 
 指定したYouTubeチャンネルのライブ配信アーカイブから、音声を一括でダウンロード・抽出します。
 ダウンロード済みの配信や、非公開・年齢制限等でダウンロードできなかった配信はキャッシュに記録され、次回以降スキップされます。
 
 **特徴:**
-* **最大 5並行ダウンロード** に対応しており、ダウンロード時間を劇的に短縮します（規制回避のための staggering スリープ機能付き）。
+* **同時 2並行ダウンロード（デフォルト）** に対応しており、ダウンロード時間を劇的に短縮します（規制回避のための staggering スリープ機能付き）。
 * デフォルトでは **再エンコードなし（そのままの形式で抽出）** で保存するため、ダウンロード完了後の FFmpeg 変換オーバーヘッドがほぼゼロです。
 
 ```powershell
@@ -69,11 +90,35 @@ python youtube_live_audio_downloader.py "@ChannelHandle" --cookies-from-browser 
 - `-o, --output`: 保存先フォルダパス (既定: `./downloads/[チャンネル名]/`)
 - `--cookies-from-browser`: メンバーシップ限定・年齢制限・非公開動画の回避用にブラウザからCookieを読み込む (例: `chrome`, `edge`, `firefox`)
 - `--ffmpeg-location`: ffmpegバイナリのパス (システム環境変数に通っていない場合)
+- `-w, --max-workers`: 最大同時ダウンロード数 (既定: `2`)
+- `--verbose-progress`: 従来の標準出力テキスト（[PROGRESS]等）による進捗ログ出力を有効にします（未指定時はプログレスバーによる表示となります）
 - `--debug`: 詳細なログを出力する
 
+## 3-2. ダウンロードと文字起こし（トランスクリプション）の統合実行 (単体スクリプト実行時)
+
+音声のダウンロードと文字起こし処理をパイプラインとして統合し、ひとつのコマンドで実行することができます。
+ダウンロードが完了したファイルから順次、バックグラウンドのキューを介して文字起こし処理が開始されます（並行ダウンロードと並行して、GPUのメモリや競合を抑えるために文字起こし自体は並行実行数1のキューで安全に処理されます）。
+
+```powershell
+# ダウンロード完了後に自動で文字起こしを実行する
+python youtube_live_audio_downloader.py "@ChannelHandle" --transcribe
+
+# 文字起こしオプションを指定する例 (GPUの使用、モデル指定、文字起こし後の音声削除など)
+python youtube_live_audio_downloader.py "@ChannelHandle" --transcribe --transcribe-device cuda --transcribe-model turbo --transcribe-delete-audio
+```
+
+主な統合オプション:
+- `--transcribe`: 自動文字起こしを有効にします。
+- `--transcribe-model`: 使用するWhisperモデル（既定: `turbo`）
+- `--transcribe-language`: 対象言語（既定: `ja`, 自動検出時は `auto`）
+- `--transcribe-device`: 推論デバイス（既定: `auto`）
+- `--transcribe-compute-type`: 計算精度（既定: `float16`）
+- `--transcribe-output-dir`: 文字起こしファイルの出力先（既定: `transcripts`）
+- `--transcribe-delete-audio`: 文字起こし完了後に元の音声ファイルを自動で削除します。
 
 
-## 3. ローカルで文字起こしする
+
+## 4. ローカルで文字起こしする (単体実行)
 
 文字起こしスクリプトは、メディアファイルのパスまたはディレクトリを受け取ります。ディレクトリを指定した場合は、その中で更新日時が最新の対応ファイルを使います。
 
@@ -96,11 +141,14 @@ python transcribe_local.py downloads --device cuda --compute-type float16
 
 主なオプション:
 - `--device`: `auto`, `cuda` (ROCm), `cpu` (既定: `auto`)
-- `--model`: `tiny`, `base`, `small`, `medium`, `large`, `turbo`
+- `--model`: `tiny`, `base`, `small`, `medium`, `large`, `turbo` などのサイズ指定、または Hugging Face のリポジトリ名（例: `kotoba-tech/kotoba-whisper-v2.0-faster`）
 - `--language`: `ja` などの言語ヒント、または `auto`
 - `--compute-type`: `auto`, `int8`, `float16`, `int8_float16`, `float32` (GPU で実行する場合は `float16` または `int8_float16` が推奨されます。既定: `float16`)
 - `--task`: `transcribe` または `translate`
 - `--batch-size`: 並列処理するチャンク数。数値を大きくすると GPU 使用率と処理速度が上がりますが、メモリ消費量が増加します（既定: `16`）
+- `--delete-audio`: 文字起こし完了後（または既に文字起こし済みのスキップ時）に、入力メディアファイルを削除します
+- `--initial-prompt`: 文字起こし開始時に与えるプロンプト。句読点（「、」「。」）の付与を促すための初期値が設定されています（既定: `"こんにちは。今日はいい天気ですね。本日はよろしくお願いいたします。"`, 無効にするには空文字列を指定）
+- `--vad-threshold`: 音声検出の感度しきい値（0.0〜1.0）。数値を下げるとより小さな音も音声と判定します（既定: `0.5`）
 
 音声ファイルを直接指定する例:
 
