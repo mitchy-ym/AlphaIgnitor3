@@ -28,7 +28,7 @@ from .transcriber import (
     load_whisper_model,
     transcribe_file
 )
-from .consistency import check_consistency_report
+from .consistency import check_consistency_report, sync_cache_report_and_fix
 
 def run_pipeline(args: argparse.Namespace) -> int:
     """ダウンロード -> デコード -> 文字起こしの3ステージ非同期パイプラインを実行します。"""
@@ -36,10 +36,6 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     # Cookieファイルの決定
     cookie_file = getattr(args, "cookies", None)
-    if not cookie_file and not getattr(args, "cookies_from_browser", None):
-        default_cookies = Path("cookies/cookies.txt")
-        if default_cookies.exists():
-            cookie_file = str(default_cookies)
             
     if cookie_file:
         sanitize_cookie_file(cookie_file)
@@ -80,6 +76,14 @@ def run_pipeline(args: argparse.Namespace) -> int:
     cache_data = load_download_cache(cache_file, args.channel_handle)
 
     downloaded_ids = set(cache_data.get("downloaded_ids", []))
+    
+    # キャッシュ同期オプションの処理
+    if getattr(args, "sync_cache", False):
+        t_out_dir = Path(args.transcribe_output_dir)
+        exit_code = sync_cache_report_and_fix(args, videos, channel_title, downloaded_ids, t_out_dir, cache_file, cache_data)
+        if exit_code != 0:
+            return exit_code
+        downloaded_ids = set(cache_data.get("downloaded_ids", []))
     
     is_retry_run = False
     target_videos = []
@@ -232,17 +236,26 @@ def run_pipeline(args: argparse.Namespace) -> int:
     if not target_videos:
         log_info("ダウンロード対象の新規動画はありません。")
         log_info("未完了のデコード処理と文字起こし処理の完了を待機しています...")
+        
+        log_info("デコードキューの完了を待機中...")
         decode_queue.join()
+        log_info("デコードキューが完了しました。デコーダースレッドを終了します...")
         for _ in range(num_threads):
             decode_queue.put(None)
-        for t in decode_threads:
-            t.join()
+        for i, t in enumerate(decode_threads):
+            t.join(timeout=2.0)
+            if t.is_alive():
+                log_warn(f"デコーダースレッド {i+1} の終了がタイムアウトしました。無視して続行します。")
         
+        log_info("文字起こしキューの完了を待機中...")
         transcribe_queue.join()
+        log_info("文字起こしキューが完了しました。文字起こしスレッドを終了します...")
         for _ in range(num_threads):
             transcribe_queue.put(None)
-        for t in transcribe_threads:
-            t.join()
+        for i, t in enumerate(transcribe_threads):
+            t.join(timeout=2.0)
+            if t.is_alive():
+                log_warn(f"文字起こシスレッド {i+1} の終了がタイムアウトしました。無視して続行します。")
         return 0
 
     success_count = 0
@@ -353,16 +366,26 @@ def run_pipeline(args: argparse.Namespace) -> int:
     log_info(f"すべてのダウンロード処理が完了しました。合計: {success_count}本成功、{fail_count}本失敗。")
 
     log_info("デコードおよび文字起こし処理の完了を待機しています...")
+    
+    log_info("デコードキューの完了を待機中...")
     decode_queue.join()
+    log_info("デコードキューが完了しました。デコーダースレッドを終了します...")
     for _ in range(num_threads):
         decode_queue.put(None)
-    for t in decode_threads:
-        t.join()
+    for i, t in enumerate(decode_threads):
+        t.join(timeout=2.0)
+        if t.is_alive():
+            log_warn(f"デコーダースレッド {i+1} の終了がタイムアウトしました。無視して続行します。")
     
+    log_info("文字起こしキューの完了を待機中...")
     transcribe_queue.join()
+    log_info("文字起こしキューが完了しました。文字起こしスレッドを終了します...")
     for _ in range(num_threads):
         transcribe_queue.put(None)
-    for t in transcribe_threads:
-        t.join()
+    for i, t in enumerate(transcribe_threads):
+        t.join(timeout=2.0)
+        if t.is_alive():
+            log_warn(f"文字起こシスレッド {i+1} の終了がタイムアウトしました。無視して続行します。")
+            
     log_info("すべての文字起こし処理が完了しました。")
     return 0

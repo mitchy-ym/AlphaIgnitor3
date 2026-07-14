@@ -156,3 +156,101 @@ def check_consistency_report(
             pass
 
     return 0, retry_video_ids
+
+
+def sync_cache_report_and_fix(
+    args: argparse.Namespace,
+    videos: list[dict],
+    channel_title: str,
+    downloaded_ids: set[str],
+    t_out_dir: Path,
+    cache_file: Path,
+    cache_data: dict
+) -> int:
+    """実ファイル（文字起こしテキスト）の状態に基づき、ダウンロードキャッシュを自動的に同期・修復します。"""
+    from .utils import log_info, log_success, log_warn
+    import time
+    from .downloader import save_download_cache
+
+    log_info("実ファイル（transcripts）とキャッシュの同期を開始します...")
+    
+    youtube_video_ids = {v["id"] for v in videos}
+    
+    # transcripts フォルダ内のファイルを解析して、実際に文字起こしテキスト（.txt）と JSON の存在状況を検出
+    # v_id -> {"txt": path/None, "json": path/None}
+    file_status = {v_id: {"txt": None, "json": None} for v_id in youtube_video_ids}
+    if t_out_dir.exists():
+        for p in t_out_dir.iterdir():
+            if p.is_file() and p.suffix in (".txt", ".json"):
+                stem = p.stem
+                for v_id in youtube_video_ids:
+                    if stem.endswith(f"_{v_id}"):
+                        file_status[v_id][p.suffix[1:]] = p
+                        break
+                        
+    # 完全な文字起こし（.txt と .json の両方が存在）がある動画 ID
+    existing_txt_ids = set()
+    
+    # 欠損ファイル（片方しかない）のクリーンアップと削除対象の検出
+    partial_removed_ids = set()
+    cleaned_count = 0
+    modified = False
+
+    for v_id, status in file_status.items():
+        has_txt = status["txt"] is not None
+        has_json = status["json"] is not None
+        
+        if has_txt and has_json:
+            existing_txt_ids.add(v_id)
+        elif has_txt or has_json:
+            # 片方しか存在しない場合、残っているファイルを削除
+            for file_path in (status["txt"], status["json"]):
+                if file_path is not None and file_path.exists():
+                    try:
+                        file_path.unlink()
+                        cleaned_count += 1
+                    except Exception as e:
+                        log_warn(f"欠損ファイルの削除に失敗しました ({file_path.name}): {e}")
+            partial_removed_ids.add(v_id)
+
+    if cleaned_count > 0:
+        log_info(f"【同期】一部欠損（TXTまたはJSONのみ存在）していた {cleaned_count} 件のトランスクリプトファイルを削除しました。")
+                        
+    # 1. キャッシュへの自動追加（両方のファイルがあるがキャッシュにない場合）
+    added_ids = existing_txt_ids - downloaded_ids
+    
+    # 2. キャッシュからの自動削除（キャッシュにあるが、実ファイルが欠落または一部欠損している場合）
+    missing_txt_ids = youtube_video_ids - existing_txt_ids
+    removed_ids = (downloaded_ids & missing_txt_ids) | partial_removed_ids
+    
+    # 3. YouTube上にない動画IDのキャッシュ内クリーンアップ
+    orphaned_ids = downloaded_ids - youtube_video_ids
+    
+    if added_ids:
+        for v_id in added_ids:
+            if v_id not in cache_data["downloaded_ids"]:
+                cache_data["downloaded_ids"].append(v_id)
+        log_info(f"【同期】文字起こしファイルが存在する {len(added_ids)} 件の動画IDをキャッシュに追加しました。")
+        modified = True
+        
+    if removed_ids:
+        new_downloaded = [v_id for v_id in cache_data["downloaded_ids"] if v_id not in removed_ids]
+        cache_data["downloaded_ids"] = new_downloaded
+        log_info(f"【同期】文字起こしファイルが存在しない、または不完全な {len(removed_ids)} 件の動画IDをキャッシュから削除しました。")
+        modified = True
+        
+    if orphaned_ids:
+        new_downloaded = [v_id for v_id in cache_data["downloaded_ids"] if v_id not in orphaned_ids]
+        cache_data["downloaded_ids"] = new_downloaded
+        log_info(f"【同期】YouTube上に存在しない {len(orphaned_ids)} 件の動画IDをキャッシュから削除（クリーンアップ）しました。")
+        modified = True
+        
+    if modified:
+        cache_data["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        save_download_cache(cache_file, cache_data)
+        log_info("キャッシュファイルの同期・更新が完了しました。")
+    else:
+        log_info("キャッシュと実ファイルは完全に一致しています。更新は不要です。")
+        
+    return 0
+

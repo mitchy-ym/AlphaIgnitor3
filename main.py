@@ -39,25 +39,26 @@ def setup_parsers() -> argparse.ArgumentParser:
     return parser
 
 def main():
-    # Windows環境等のエンコーディング対策
+    # Windows環境等のエンコーディング対策（常に行バッファリングを有効にしてデッドロックを防ぐ）
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
     if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
 
     parser = setup_parsers()
     args = parser.parse_args()
 
+    import os
     if args.command == "download":
         from timestamper.downloader import run_downloader
-        sys.exit(run_downloader(args))
+        os._exit(run_downloader(args))
     elif args.command == "transcribe":
         from timestamper.transcriber import run_transcribe_worker
-        sys.exit(run_transcribe_worker(args))
+        os._exit(run_transcribe_worker(args))
     elif args.command == "pipeline":
         args.transcribe = True  # パイプライン処理のフラグを有効化
         from timestamper.pipeline import run_pipeline
-        sys.exit(run_pipeline(args))
+        os._exit(run_pipeline(args))
 
 if __name__ == "__main__":
     main()

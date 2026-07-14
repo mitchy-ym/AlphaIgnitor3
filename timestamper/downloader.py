@@ -234,10 +234,6 @@ def run_downloader(args: argparse.Namespace) -> int:
 
     # Cookieファイルの決定
     cookie_file = getattr(args, "cookies", None)
-    if not cookie_file and not getattr(args, "cookies_from_browser", None):
-        default_cookies = Path("cookies/cookies.txt")
-        if default_cookies.exists():
-            cookie_file = str(default_cookies)
     
     if cookie_file:
         sanitize_cookie_file(cookie_file)

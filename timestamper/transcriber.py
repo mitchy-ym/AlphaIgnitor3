@@ -120,21 +120,7 @@ def build_decode_options(args: argparse.Namespace) -> dict:
         
     return decode_options
 
-def detect_silent_chunks(audio_data: np.ndarray, sr: int = 16000, threshold: float = 0.018, window_sec: int = 30) -> set[int]:
-    """音声データに含まれる無音区間の 30秒 チャンクインデックスを計算します。"""
-    chunk_size = sr * window_sec
-    num_chunks = int(np.ceil(len(audio_data) / chunk_size))
-    silent_chunks = set()
 
-    for i in range(num_chunks):
-        start_idx = i * chunk_size
-        end_idx = min((i + 1) * chunk_size, len(audio_data))
-        chunk = audio_data[start_idx:end_idx]
-        if len(chunk) > 0:
-            rms = np.sqrt(np.mean(chunk ** 2))
-            if rms < threshold:
-                silent_chunks.add(i)
-    return silent_chunks
 
 def build_output_paths(output_dir: Path, media_path: Path) -> tuple[Path, Path]:
     """出力するテキストと JSON の保存パスを構築します。"""
@@ -184,7 +170,6 @@ def transcribe_file(
                 use_async = False
 
     decode_options = build_decode_options(args)
-    silent_chunks = set()
     result_segments = []
     filtered_count = 0
     detected_language = None
@@ -259,12 +244,6 @@ def transcribe_file(
 
             chunk = item
 
-            # ローカルの無音検出
-            chunk_silent_indices = detect_silent_chunks(chunk.audio_data)
-            for relative_idx in chunk_silent_indices:
-                absolute_30s_idx = int(chunk.start_time // 30) + relative_idx
-                silent_chunks.add(absolute_30s_idx)
-
             chunk_decode_options = decode_options.copy()
             if args.language.lower() == "auto" and detected_language is not None:
                 chunk_decode_options["language"] = detected_language
@@ -278,11 +257,18 @@ def transcribe_file(
             for segment in segments:
                 absolute_start = chunk.start_time + segment.start
                 absolute_end = chunk.start_time + segment.end
-                chunk_idx = int(absolute_start // 30)
 
-                if chunk_idx in silent_chunks:
-                    filtered_count += 1
-                    continue
+                # セグメント単位のRMS無音足切り
+                min_rms = getattr(args, "min_rms", 0.003)
+                if min_rms > 0.0:
+                    start_sample = int(segment.start * 16000)
+                    end_sample = int(segment.end * 16000)
+                    segment_audio = chunk.audio_data[start_sample:end_sample]
+                    if len(segment_audio) > 0:
+                        rms = np.sqrt(np.mean(segment_audio ** 2))
+                        if rms < min_rms:
+                            filtered_count += 1
+                            continue
 
                 text = segment.text.strip()
                 if not text:
@@ -317,19 +303,23 @@ def transcribe_file(
             audio = decode_audio(str(media_path), sampling_rate=16000)
             print(f"Audio loaded in {time.time() - start_load:.2f} seconds. Shape: {audio.shape}", flush=True)
 
-        silent_chunks = detect_silent_chunks(audio)
-        print(f"VAD detected {len(silent_chunks)} silent chunks out of {int(np.ceil(len(audio)/(16000*30)))} total.", flush=True)
-
         print(f"Starting batched Whisper transcription (batch_size={args.batch_size})...", flush=True)
         segments, info = model.transcribe(audio, batch_size=args.batch_size, **decode_options)
 
         print(f"Detected language '{info.language}' with probability {info.language_probability:.2f}", flush=True)
 
         for segment in segments:
-            chunk_idx = int(segment.start // 30)
-            if chunk_idx in silent_chunks:
-                filtered_count += 1
-                continue
+            # セグメント単位のRMS無音足切り
+            min_rms = getattr(args, "min_rms", 0.003)
+            if min_rms > 0.0:
+                start_sample = int(segment.start * 16000)
+                end_sample = int(segment.end * 16000)
+                segment_audio = audio[start_sample:end_sample]
+                if len(segment_audio) > 0:
+                    rms = np.sqrt(np.mean(segment_audio ** 2))
+                    if rms < min_rms:
+                        filtered_count += 1
+                        continue
 
             text = segment.text.strip()
             if not text:

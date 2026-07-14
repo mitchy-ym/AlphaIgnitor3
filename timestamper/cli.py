@@ -30,7 +30,7 @@ def add_download_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--cookies",
         default=None,
-        help="Netscape形式のCookieファイルパス (例: cookies/cookies.txt)。指定しない場合、cookies/cookies.txtが存在すれば自動的に読み込みます。"
+        help="Netscape形式のCookieファイルパス (例: cookies/cookies.txt)。"
     )
     parser.add_argument(
         "--ffmpeg-location",
@@ -71,6 +71,11 @@ def add_download_arguments(parser: argparse.ArgumentParser):
         "--check-consistency",
         action="store_true",
         help="YouTubeの動画一覧と、ローカルのキャッシュ・音声ファイル・文字起こし結果（transcriptsフォルダ）の整合性を確認します。"
+    )
+    parser.add_argument(
+        "--sync-cache",
+        action="store_true",
+        help="実ファイル（transcriptsフォルダ内の文字起こしテキスト）の状態に基づき、ローカルのダウンロードキャッシュを自動的に同期・修復します。"
     )
 
 def add_transcribe_arguments(parser: argparse.ArgumentParser, prefix: str = ""):
@@ -171,4 +176,10 @@ def add_transcribe_arguments(parser: argparse.ArgumentParser, prefix: str = ""):
         type=float,
         default=600.0,
         help="非同期処理での音声分割のチャンク秒数 (デフォルト: 600.0)"
+    )
+    parser.add_argument(
+        f"--{p}min-rms",
+        type=float,
+        default=0.003,
+        help="文字起こしセグメントの最小RMS（音量エネルギー）しきい値。これ未満の区間はハルシネーションと見なして除外します。0.0で無効化 (デフォルト: 0.003)"
     )
