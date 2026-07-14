@@ -168,3 +168,32 @@ python transcribe_local.py "downloads\\20260614_【＃作業配信】色々作�
 - `device=auto` (利用可能であれば `cuda`、不可であれば `cpu`)
 - `compute_type=float16`
 
+
+## 5. 文字起こし結果をまとめる `merge_transcripts.py`
+
+`transcripts/` 配下の文字起こしファイル（`*.txt`）を、チャンネルごとに集約して1つのファイルに結合します。  
+`_summary` フォルダ配下のファイルは自動的に除外されます。
+
+```powershell
+# 月ごとに結合（デフォルト）
+python merge_transcripts.py
+python merge_transcripts.py --mode monthly
+
+# 年ごとに結合
+python merge_transcripts.py --mode yearly
+
+# チャンネルごとに1ファイルにまとめる
+python merge_transcripts.py --mode all
+```
+
+出力先: `transcripts/{channel_name}_summary/`
+
+| モード | 出力ファイル名 |
+|---|---|
+| `monthly` | `{YYYYMM}.txt` |
+| `yearly` | `{YYYY}.txt` |
+| `all` | `all.txt` |
+
+- `monthly` / `yearly` モードでは、ファイル名先頭に `YYYYMMDD_` の日付プレフィックスがないファイルはスキップされます。
+- `all` モードでは、日付プレフィックスの有無にかかわらずすべてのファイルが対象になります。
+
