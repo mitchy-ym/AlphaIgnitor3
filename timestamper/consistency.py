@@ -17,6 +17,7 @@ def check_consistency_report(
 
     youtube_video_ids = {v["id"] for v in videos}
     video_map = {v["id"]: v for v in videos}
+    expect_json = bool(getattr(args, "transcribe_json", False) or getattr(args, "json", False))
 
     # 1. transcriptsフォルダ内のファイルを解析します
     existing_files = []
@@ -49,8 +50,9 @@ def check_consistency_report(
                         break
 
     # 3. 各動画の状態を分類します
-    complete = []           # .txt と .json の両方が存在
-    partial = []            # .txt または .json の片方のみ存在
+    complete = []           # .txt が存在（JSONは任意）
+    json_only = []          # .json のみ存在（.txt 欠損）
+    txt_without_json = []   # .txt はあるが .json がない（JSON出力有効時のみ参考）
     only_audio = []         # 音声ファイルはあるが、文字起こしが全くない
     cache_but_no_trans = [] # キャッシュにあるが、文字起こしファイルがない
     trans_but_no_cache = [] # 文字起こしはあるが、キャッシュにない
@@ -64,12 +66,14 @@ def check_consistency_report(
         has_audio = len(audio_status[v_id]) > 0
         in_cache = v_id in downloaded_ids
 
-        if has_txt and has_json:
+        if has_txt:
             complete.append(v_id)
+            if not has_json:
+                txt_without_json.append(v_id)
             if not in_cache:
                 trans_but_no_cache.append(v_id)
-        elif has_txt or has_json:
-            partial.append((v_id, has_txt, has_json))
+        elif has_json:
+            json_only.append(v_id)
         elif has_audio:
             only_audio.append(v_id)
         elif in_cache:
@@ -83,10 +87,12 @@ def check_consistency_report(
     # 5. レポートの出力
     print(f"【概要統計】")
     print(f"  - YouTube上の公開アーカイブ総数 : {len(videos)} 本")
-    print(f"  - 文字起こし完了 (.txt & .json) : {len(complete)} 本")
+    print(f"  - 文字起こし完了 (.txt)         : {len(complete)} 本")
+    if expect_json:
+        print(f"  - JSON不足（JSON出力有効時）   : {len(txt_without_json)} 本")
     print(f"  - 未処理（新規処理対象）        : {len(unprocessed)} 本")
     print(f"  - 音声あり・文字起こし未実行    : {len(only_audio)} 本")
-    print(f"  - 文字起こしの一部欠損          : {len(partial)} 本")
+    print(f"  - 文字起こし欠損（JSONのみ）    : {len(json_only)} 本")
     print(f"  - キャッシュ済・文字起こし無    : {len(cache_but_no_trans)} 本 (※エラーでスキップされた可能性あり)")
     print(f"  - 文字起こし有・キャッシュ未登録 : {len(trans_but_no_cache)} 本")
     print(f"  - キャッシュ内のみ存在（非公開等）: {len(orphaned_cache_ids)} 本")
@@ -95,14 +101,17 @@ def check_consistency_report(
     # 詳細な不整合などのアラート
     has_issues = False
 
-    if partial:
+    if json_only:
         has_issues = True
-        print(f"\n[⚠️ 警告] 文字起こしファイルの一部欠損 ({len(partial)} 件):")
-        for v_id, has_txt, has_json in partial:
+        print(f"\n[⚠️ 警告] 文字起こしファイル欠損（JSONのみ存在、TXT不足）({len(json_only)} 件):")
+        for v_id in json_only:
             v = video_map[v_id]
-            missing = "JSON" if has_txt else "TXT"
-            print(f"  - ID: {v_id} | {missing}ファイルが不足しています | URL: {v['url']}")
+            print(f"  - ID: {v_id} | TXTファイルが不足しています | URL: {v['url']}")
             print(f"    タイトル: {v['title']}")
+
+    if expect_json and txt_without_json:
+        print(f"\n[ℹ️ 参考] JSON出力が有効ですが、TXTのみ存在する動画があります ({len(txt_without_json)} 件):")
+        print("  ※ 現在の既定動作はTXTのみ出力です。必要であれば --json / --transcribe-json を付けて再生成してください。")
 
     if only_audio:
         has_issues = True
@@ -137,7 +146,7 @@ def check_consistency_report(
             print(f"  - ID: {v_id}")
 
     if not has_issues:
-        print(f"\n[✅ 正常] 重大な不整合（一部欠損やキャッシュ未登録など）は検出されませんでした。")
+        print(f"\n[✅ 正常] 重大な不整合（TXT欠損やキャッシュ未登録など）は検出されませんでした。")
 
     print(f"========================================================\n")
 
@@ -167,7 +176,7 @@ def sync_cache_report_and_fix(
     cache_file: Path,
     cache_data: dict
 ) -> int:
-    """実ファイル（文字起こしテキスト）の状態に基づき、ダウンロードキャッシュを自動的に同期・修復します。"""
+    """実ファイル（TXT必須、JSON任意）の状態に基づき、ダウンロードキャッシュを同期・修復します。"""
     from .utils import log_info, log_success, log_warn
     import time
     from .downloader import save_download_cache
@@ -176,7 +185,7 @@ def sync_cache_report_and_fix(
     
     youtube_video_ids = {v["id"] for v in videos}
     
-    # transcripts フォルダ内のファイルを解析して、実際に文字起こしテキスト（.txt）と JSON の存在状況を検出
+    # transcripts フォルダ内のファイルを解析して、実際に文字起こしテキスト（.txt）とJSONの存在状況を検出
     # v_id -> {"txt": path/None, "json": path/None}
     file_status = {v_id: {"txt": None, "json": None} for v_id in youtube_video_ids}
     if t_out_dir.exists():
@@ -188,10 +197,10 @@ def sync_cache_report_and_fix(
                         file_status[v_id][p.suffix[1:]] = p
                         break
                         
-    # 完全な文字起こし（.txt と .json の両方が存在）がある動画 ID
+    # 文字起こし完了（.txt が存在）している動画 ID
     existing_txt_ids = set()
     
-    # 欠損ファイル（片方しかない）のクリーンアップと削除対象の検出
+    # 欠損ファイルのクリーンアップと削除対象の検出
     partial_removed_ids = set()
     cleaned_count = 0
     modified = False
@@ -200,26 +209,26 @@ def sync_cache_report_and_fix(
         has_txt = status["txt"] is not None
         has_json = status["json"] is not None
         
-        if has_txt and has_json:
+        if has_txt:
             existing_txt_ids.add(v_id)
-        elif has_txt or has_json:
-            # 片方しか存在しない場合、残っているファイルを削除
-            for file_path in (status["txt"], status["json"]):
-                if file_path is not None and file_path.exists():
-                    try:
-                        file_path.unlink()
-                        cleaned_count += 1
-                    except Exception as e:
-                        log_warn(f"欠損ファイルの削除に失敗しました ({file_path.name}): {e}")
+        elif has_json:
+            # JSONのみ存在する場合は不完全状態として JSON を削除
+            file_path = status["json"]
+            if file_path is not None and file_path.exists():
+                try:
+                    file_path.unlink()
+                    cleaned_count += 1
+                except Exception as e:
+                    log_warn(f"欠損ファイルの削除に失敗しました ({file_path.name}): {e}")
             partial_removed_ids.add(v_id)
 
     if cleaned_count > 0:
-        log_info(f"【同期】一部欠損（TXTまたはJSONのみ存在）していた {cleaned_count} 件のトランスクリプトファイルを削除しました。")
+        log_info(f"【同期】一部欠損（JSONのみ存在）していた {cleaned_count} 件のトランスクリプトファイルを削除しました。")
                         
     # 1. キャッシュへの自動追加（両方のファイルがあるがキャッシュにない場合）
     added_ids = existing_txt_ids - downloaded_ids
     
-    # 2. キャッシュからの自動削除（キャッシュにあるが、実ファイルが欠落または一部欠損している場合）
+    # 2. キャッシュからの自動削除（キャッシュにあるが、TXT実ファイルが欠落している場合）
     missing_txt_ids = youtube_video_ids - existing_txt_ids
     removed_ids = (downloaded_ids & missing_txt_ids) | partial_removed_ids
     

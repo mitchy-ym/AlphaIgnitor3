@@ -101,11 +101,11 @@ def run_pipeline(args: argparse.Namespace) -> int:
             return 0
 
     if not is_retry_run:
-        # すでに文字起こし結果（.txt または .json）が出力先フォルダに存在する動画IDを検出する
+        # すでに文字起こし結果（.txt）が出力先フォルダに存在する動画IDを検出する
         t_out_dir = Path(args.transcribe_output_dir)
         completed_video_ids = set()
         if t_out_dir.exists():
-            existing_files = {p.name for p in t_out_dir.iterdir() if p.is_file() and p.suffix in (".txt", ".json")}
+            existing_files = {p.name for p in t_out_dir.iterdir() if p.is_file() and p.suffix == ".txt"}
             for v in videos:
                 v_id = v["id"]
                 for fname in existing_files:
@@ -290,8 +290,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 for p in output_dir.iterdir():
                     if p.is_file() and p.suffix.lower() in MEDIA_EXTENSIONS:
                         txt_path = Path(args.transcribe_output_dir) / f"{p.stem}.txt"
-                        json_path = Path(args.transcribe_output_dir) / f"{p.stem}.json"
-                        if not (txt_path.exists() or json_path.exists()):
+                        if not txt_path.exists():
                             active_media_files.append(p)
             if len(active_media_files) < max_active_files:
                 break
