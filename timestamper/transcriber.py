@@ -69,14 +69,20 @@ def resolve_input_media(input_path: Path) -> list[Path]:
     return sorted(candidates, key=lambda path: path.stat().st_ctime)
 
 def select_device(device: str) -> str:
-    """デバイス設定が auto の場合に GPU (CUDA) が利用可能なら cuda、不可なら cpu を返します。"""
-    if device == "auto":
-        try:
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            pass
-        return "cpu"
-    return device
+    """GPU 前提でデバイスを決定し、GPU が使えなければ例外を送出します。"""
+    if device == "cpu":
+        raise ValueError("CPU execution is disabled. Use GPU (cuda) only.")
+
+    if device not in {"auto", "cuda"}:
+        raise ValueError(f"Unsupported device: {device}")
+
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception as exc:
+        raise RuntimeError(f"Failed to detect GPU availability: {exc}") from exc
+
+    raise RuntimeError("GPU is not available. CPU fallback is disabled.")
 
 def load_whisper_model(model_path: str, device: str, compute_type: str) -> "BatchedInferencePipeline":
     """Whisper モデルを読み込み、BatchedInferencePipeline でラップして返します。"""
@@ -122,13 +128,14 @@ def build_decode_options(args: argparse.Namespace) -> dict:
 
 
 
-def build_output_paths(output_dir: Path, media_path: Path) -> tuple[Path, Path]:
-    """出力するテキストと JSON の保存パスを構築します。"""
+def build_output_paths(output_dir: Path, media_path: Path, output_json: bool = False) -> tuple[Path, Path | None]:
+    """出力するテキストと（必要なら）JSONの保存パスを構築します。"""
     base_name = media_path.stem
-    return output_dir / f"{base_name}.txt", output_dir / f"{base_name}.json"
+    json_path = output_dir / f"{base_name}.json" if output_json else None
+    return output_dir / f"{base_name}.txt", json_path
 
-def write_outputs(text_path: Path, json_path: Path, result: dict) -> None:
-    """文字起こし結果をテキストおよび JSON 形式で出力します。"""
+def write_outputs(text_path: Path, json_path: Path | None, result: dict) -> None:
+    """文字起こし結果をテキストおよび（指定時のみ）JSON形式で出力します。"""
     lines = []
     for seg in result.get("segments", []):
         start_str = format_seconds(seg.get("start", 0.0))
@@ -138,12 +145,13 @@ def write_outputs(text_path: Path, json_path: Path, result: dict) -> None:
 
     text_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    payload = {
-        "text": result["text"].strip(),
-        "language": result.get("language"),
-        "segments": result.get("segments", []),
-    }
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if json_path is not None:
+        payload = {
+            "text": result["text"].strip(),
+            "language": result.get("language"),
+            "segments": result.get("segments", []),
+        }
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def transcribe_file(
     media_path: Path,
@@ -154,6 +162,7 @@ def transcribe_file(
 ) -> int:
     """指定された単一のメディアファイルを Whisper で文字起こし（無音区間のフィルタリング含む）処理します。"""
     active_device = select_device(args.device)
+    active_compute_type = args.compute_type
     start_time_all = time.time()
 
     # GPU実行時のみ非同期プレロード・分割処理を有効にします
@@ -343,11 +352,11 @@ def transcribe_file(
         }
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    text_path, json_path = build_output_paths(output_dir, media_path)
+    text_path, json_path = build_output_paths(output_dir, media_path, output_json=getattr(args, "json", False))
     write_outputs(text_path, json_path, result)
 
     elapsed_time = time.time() - start_time_all
-    print(f"Success! output={text_path} (device={active_device}, compute={args.compute_type}) - Time taken: {elapsed_time:.2f} seconds", flush=True)
+    print(f"Success! output={text_path} (device={active_device}, compute={active_compute_type}) - Time taken: {elapsed_time:.2f} seconds", flush=True)
     return 0
 
 def run_transcribe_worker(args: argparse.Namespace) -> int:

@@ -92,7 +92,7 @@ def add_transcribe_arguments(parser: argparse.ArgumentParser, prefix: str = ""):
         parser.add_argument(
             "-o", "--output-dir",
             default="transcripts",
-            help="テキストとJSONの文字起こし結果を保存するディレクトリ (デフォルト: transcripts)"
+            help="文字起こし結果を保存するディレクトリ (デフォルト: transcripts)"
         )
         parser.add_argument(
             "--model",
@@ -112,15 +112,21 @@ def add_transcribe_arguments(parser: argparse.ArgumentParser, prefix: str = ""):
         )
 
     parser.add_argument(
+        f"--{p}json",
+        action="store_true",
+        help="文字起こし結果をJSON形式でも出力します（デフォルト: 無効）"
+    )
+
+    parser.add_argument(
         f"--{p}language",
         default="ja",
         help="対象言語コード。自動検出にする場合は 'auto' を指定 (デフォルト: ja)"
     )
     parser.add_argument(
         f"--{p}device",
-        choices=["auto", "cuda", "cpu"],
+        choices=["auto", "cuda"],
         default="auto",
-        help="推論デバイス (デフォルト: auto)"
+        help="推論デバイス。GPU 前提のため auto または cuda のみ指定できます (デフォルト: auto)"
     )
     parser.add_argument(
         f"--{p}compute-type",

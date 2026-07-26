@@ -39,7 +39,7 @@ Ryzen / Radeon GPU を搭載した AMD 環境 (ROCm) で `faster-whisper` によ
 
 ### 1-3. 環境変数と互換性の自動適用
 文字起こしスクリプト `transcribe_local.py` の実行時、以下の設定が自動的に適用されるため、RDNA 3/3.5 の統合 GPU も自動的に動作します。
-- `HSA_OVERRIDE_GFX_VERSION=11.0.0` (RDNA 3/3.5 iGPU/APU 互換)
+- `HSA_OVERRIDE_GFX_VERSION=11.5.0` (RDNA 3.5 iGPU/APU 互換)
 - `HF_HUB_DISABLE_SYMLINKS_WARNING=1` (Windows上のHFシンボリックリンク警告抑止)
 - `KMP_DUPLICATE_LIB_OK=TRUE` (OpenMP ランタイム競合回避)
 
@@ -127,7 +127,7 @@ python youtube_live_audio_downloader.py "@ChannelHandle" --transcribe --transcri
 
 文字起こしスクリプトは、メディアファイルのパスまたはディレクトリを受け取ります。ディレクトリを指定した場合は、その中で更新日時が最新の対応ファイルを使います。
 
-既定では ROCm (CUDA) が利用可能な場合は自動的に GPU を使用します。
+既定では NVIDIA CUDA が利用可能な場合は自動的に GPU を使用します。ROCm/HIP 環境では `faster-whisper` の GPU 実行が不安定なため、自動的に CPU にフォールバックします。
 
 **特徴:**
 * **モデルは起動時に1回だけメモリにロード**され、複数ファイル間で使い回されるためバッチ処理が非常に高速です。
@@ -136,8 +136,8 @@ python youtube_live_audio_downloader.py "@ChannelHandle" --transcribe --transcri
 ```powershell
 python transcribe_local.py downloads
 python transcribe_local.py downloads --language ja
-# AMD GPU (ROCm) を明示的に指定して高速に文字起こしをする例
-python transcribe_local.py downloads --device cuda --compute-type float16
+# ROCm 環境で安定動作を優先する例
+python transcribe_local.py downloads --device cpu --compute-type int8
 ```
 
 出力ファイルは既定で `transcripts/` に保存されます。
@@ -145,10 +145,10 @@ python transcribe_local.py downloads --device cuda --compute-type float16
 - `.json`: 文字起こし本文とタイムスタンプ付きセグメント
 
 主なオプション:
-- `--device`: `auto`, `cuda` (ROCm), `cpu` (既定: `auto`)
+- `--device`: `auto`, `cuda`, `cpu` (既定: `auto`。ROCm/HIP 環境の `auto` は安全のため `cpu` にフォールバックします)
 - `--model`: `tiny`, `base`, `small`, `medium`, `large`, `turbo` などのサイズ指定、または Hugging Face のリポジトリ名（例: `kotoba-tech/kotoba-whisper-v2.0-faster`）
 - `--language`: `ja` などの言語ヒント、または `auto`
-- `--compute-type`: `auto`, `int8`, `float16`, `int8_float16`, `float32` (GPU で実行する場合は `float16` または `int8_float16` が推奨されます。既定: `float16`)
+- `--compute-type`: `auto`, `int8`, `float16`, `int8_float16`, `float32` (GPU で実行する場合は `float16` または `int8_float16` が推奨されます。CPU では `int8` を推奨。既定: `float16`)
 - `--task`: `transcribe` または `translate`
 - `--batch-size`: 並列処理するチャンク数。数値を大きくすると GPU 使用率と処理速度が上がりますが、メモリ消費量が増加します（既定: `16`）
 - `--delete-audio`: 文字起こし完了後（または既に文字起こし済みのスキップ時）に、入力メディアファイルを削除します
@@ -165,7 +165,7 @@ python transcribe_local.py "downloads\\20260614_【＃作業配信】色々作�
 既定の動作:
 - `model=turbo`
 - `task=transcribe`
-- `device=auto` (利用可能であれば `cuda`、不可であれば `cpu`)
+- `device=auto` (NVIDIA CUDA が利用可能であれば `cuda`、それ以外は `cpu`)
 - `compute_type=float16`
 
 

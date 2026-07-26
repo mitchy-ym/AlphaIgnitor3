@@ -180,6 +180,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     task=transcribe_args.transcribe_task,
                     beam_size=transcribe_args.transcribe_beam_size,
                     batch_size=transcribe_args.transcribe_batch_size,
+                    json=getattr(transcribe_args, "transcribe_json", False),
                     delete_audio=not getattr(transcribe_args, "transcribe_keep_audio", False),
                     initial_prompt=transcribe_args.transcribe_initial_prompt,
                     vad_threshold=transcribe_args.transcribe_vad_threshold,

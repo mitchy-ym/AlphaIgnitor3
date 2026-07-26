@@ -4,8 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
-# AMD ROCm RDNA3/3.5 iGPU/APU 互換性（Radeon 890M / 780M など）のための環境変数設定
-os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+# AMD ROCm RDNA3.5 iGPU/APU 互換性（Radeon 890M など）のための環境変数設定
+os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "11.5.0")
 # Windows上での Hugging Face Hub シンボリックリンク警告を抑止
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 # OpenMP ランタイムの競合回避（Windows環境）
