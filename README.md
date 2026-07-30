@@ -38,14 +38,14 @@ Ryzen / Radeon GPU を搭載した AMD 環境 (ROCm) で `faster-whisper` によ
      ```
 
 ### 1-3. 環境変数と互換性の自動適用
-文字起こしスクリプト `transcribe_local.py` の実行時、以下の設定が自動的に適用されるため、RDNA 3/3.5 の統合 GPU も自動的に動作します。
+文字起こし処理（`python main.py pipeline ...`）の実行時、以下の設定が自動的に適用されるため、RDNA 3/3.5 の統合 GPU も自動的に動作します。
 - `HSA_OVERRIDE_GFX_VERSION=11.5.0` (RDNA 3.5 iGPU/APU 互換)
 - `HF_HUB_DISABLE_SYMLINKS_WARNING=1` (Windows上のHFシンボリックリンク警告抑止)
 - `KMP_DUPLICATE_LIB_OK=TRUE` (OpenMP ランタイム競合回避)
 
-## 2. 統一エントリーポイント `main.py` の使用方法 (推奨)
+## 2. 統一エントリーポイント `main.py` の使用方法
 
-本プロジェクトの各機能は、統合 CLI エントリーポイントである [main.py](file:///workspace/TimeStamper/main.py) から実行することを推奨します。
+本プロジェクトの各機能は、統合 CLI エントリーポイントである `main.py` から実行することを推奨します。
 
 ```powershell
 # ヘルプを表示する
@@ -54,35 +54,40 @@ python main.py --help
 # ① 音声のダウンロードのみ実行
 python main.py download "@ChannelHandle"
 
-# ② ダウンロード + デコード + 文字起こしの3ステージ非同期パイプラインを実行 (推奨)
+# ② ダウンロード + 文字起こしのパイプラインを実行 (推奨)
 python main.py pipeline "@ChannelHandle" --transcribe-device cuda --transcribe-model turbo
 
-# ③ ローカルの音声ファイルの文字起こしのみを実行
-python main.py transcribe ./downloads/ChannelName --device cuda
+# ③ 文字起こし後に Windows 側 Ollama で整形・要約・章立ても生成
+python main.py pipeline "@ChannelHandle" --enrich --llm-endpoint http://172.19.208.1:11434/v1 --llm-model qwen3.6:latest
+
+# ④ 文字起こしテキストを月次/年次/全件で結合
+python main.py merge --mode monthly
+python main.py merge --mode yearly
+python main.py merge --mode all
 ```
 
 各サブコマンドのオプション詳細を確認するには、`python main.py [サブコマンド] --help` を実行してください。
 
 
-## 3. 配信アーカイブ（音声）を一括ダウンロードする (単体実行)
+## 3. 配信アーカイブ（音声）を一括ダウンロードする
 
 指定したYouTubeチャンネルのライブ配信アーカイブから、音声を一括でダウンロード・抽出します。
 ダウンロード済みの配信や、非公開・年齢制限等でダウンロードできなかった配信はキャッシュに記録され、次回以降スキップされます。
 
 **特徴:**
-* **同時 2並行ダウンロード（デフォルト）** に対応しており、ダウンロード時間を劇的に短縮します（規制回避のための staggering スリープ機能付き）。
+* **同時 2並行ダウンロード（デフォルト）** に対応しており、ダウンロード時間を短縮します（規制回避のための staggering スリープ機能付き）。
 * デフォルトでは **再エンコードなし（そのままの形式で抽出）** で保存するため、ダウンロード完了後の FFmpeg 変換オーバーヘッドがほぼゼロです。
 
 ```powershell
-python youtube_live_audio_downloader.py "@ChannelHandle"
+python main.py download "@ChannelHandle"
 ```
 
 よく使うオプション:
 
 ```powershell
-python youtube_live_audio_downloader.py "@ChannelHandle" -f best
-python youtube_live_audio_downloader.py "@ChannelHandle" -f mp3 -b 192k
-python youtube_live_audio_downloader.py "@ChannelHandle" --cookies-from-browser chrome
+python main.py download "@ChannelHandle" -f best
+python main.py download "@ChannelHandle" -f mp3 -b 192k
+python main.py download "@ChannelHandle" --cookies-from-browser chrome
 ```
 
 - `channel_handle` (第1引数): `@`から始まるチャンネル名（例: `@Google`）
@@ -94,99 +99,107 @@ python youtube_live_audio_downloader.py "@ChannelHandle" --cookies-from-browser 
 - `--ffmpeg-location`: ffmpegバイナリのパス (システム環境変数に通っていない場合)
 - `-w, --max-workers`: 最大同時ダウンロード数 (既定: `2`)
 - `--no-verbose-progress`, `--quiet`, `-q`: 進捗ログ（[INFO]や[PROGRESS]等）の標準出力を無効にし、プログレスバー表示に切り替えます（既定では標準出力テキスト表示がONになっています）
-- `--check-consistency`: YouTubeの動画一覧と、ローカルのキャッシュ・音声ファイル・文字起こし結果（transcriptsフォルダ）の整合性を確認します。また、「キャッシュ済・文字起こし無」の動画が見つかった場合、それらを一括で再処理（再ダウンロードと文字起こし）するかどうかを対話式で確認し、Yesの場合は再試行を実行します。
 - `--debug`: 詳細なログを出力する
 
-## 3-2. ダウンロードと文字起こし（トランスクリプション）の統合実行 (単体スクリプト実行時)
+## 3-2. ダウンロードと文字起こし（トランスクリプション）の統合実行
 
-音声のダウンロードと文字起こし処理をパイプラインとして統合し、ひとつのコマンドで実行することができます。
-ダウンロードが完了したファイルから順次、バックグラウンドのキューを介して文字起こし処理が開始されます（並行ダウンロードと並行して、GPUのメモリや競合を抑えるために文字起こし自体は並行実行数1のキューで安全に処理されます）。
+音声のダウンロード、Whisper 文字起こし、必要であれば Ollama による後段処理を、ひとつのコマンドで実行します。
+ダウンロードは並列実行され、ダウンロード完了した音声から順次、単一の GPU 文字起こしワーカーで処理されます。`--enrich` を付けた場合は、そのまま Windows 側 Ollama に送って `clean / summary / chapters` を生成します。
 
 ```powershell
 # ダウンロード完了後に自動で文字起こしを実行する
-python youtube_live_audio_downloader.py "@ChannelHandle" --transcribe
+python main.py pipeline "@ChannelHandle"
 
-# 文字起こしオプションを指定する例 (GPUの使用、モデル指定、文字起こし後の音声削除など)
-python youtube_live_audio_downloader.py "@ChannelHandle" --transcribe --transcribe-device cuda --transcribe-model turbo --transcribe-delete-audio
+# 文字起こしオプションを指定する例 (GPUの使用、モデル指定、文字起こし後も音声を保持)
+python main.py pipeline "@ChannelHandle" --transcribe-device cuda --transcribe-model turbo --transcribe-keep-audio
+
+# 後段処理も含めて実行する例
+python main.py pipeline "@ChannelHandle" --enrich --llm-endpoint http://172.19.208.1:11434/v1 --llm-model qwen3.6:latest
 ```
 
 主な統合オプション:
-- `--transcribe`: 自動文字起こしを有効にします。
 - `--transcribe-model`: 使用するWhisperモデル（既定: `turbo`）
 - `--transcribe-language`: 対象言語（既定: `ja`, 自動検出時は `auto`）
 - `--transcribe-device`: 推論デバイス（既定: `auto`）
 - `--transcribe-compute-type`: 計算精度（既定: `float16`）
 - `--transcribe-output-dir`: 文字起こしファイルの出力先（既定: `transcripts`）
-- `--transcribe-delete-audio`: 文字起こし完了後に元の音声ファイルを自動で削除します。
-- `--check-consistency`: ダウンロードと文字起こしの整合性確認レポートを出力し、キャッシュ済・文字起こし無の動画があれば再処理を対話式で実行します。
+- `--transcribe-keep-audio`: 文字起こし完了後も元の音声ファイルを保持します（既定では自動削除）。
 - `--cookies`: Netscape形式のCookieファイルパス。既定では `cookies/cookies.txt` が自動的に読み込まれます。
+## 4. Windows 側 Ollama で後段処理する
 
+`--enrich` を付けると、Whisper の文字起こし `.txt` を Windows 11 側で動作している Ollama に渡し、以下の3成果物を常にまとめて生成します。クラウド API には送信しません。
 
+- `clean`: タイムスタンプ付きの整形済み文字起こし
+- `summary`: 要約
+- `chapters`: タイムスタンプ付き章立て
 
-## 4. ローカルで文字起こしする (単体実行)
+Ollama は Windows 側で起動しておきます。WSL2 からは `localhost` ではなく、Windows ホストのゲートウェイ IP を使うのが前提です。
 
-文字起こしスクリプトは、メディアファイルのパスまたはディレクトリを受け取ります。ディレクトリを指定した場合は、その中で更新日時が最新の対応ファイルを使います。
-
-既定では NVIDIA CUDA が利用可能な場合は自動的に GPU を使用します。ROCm/HIP 環境では `faster-whisper` の GPU 実行が不安定なため、自動的に CPU にフォールバックします。
-
-**特徴:**
-* **モデルは起動時に1回だけメモリにロード**され、複数ファイル間で使い回されるためバッチ処理が非常に高速です。
-* **BatchedInferencePipeline による並列推論**が組み込まれており、複数の音声チャンクを同時にバッチ処理（既定: 16チャンク並列）することで GPU 使用率を高め、スループットを劇的に向上させています。
+既定値:
+- エンドポイント: `http://172.19.208.1:11434/v1`
+- モデル名: `qwen3.6:latest`
 
 ```powershell
-python transcribe_local.py downloads
-python transcribe_local.py downloads --language ja
-# ROCm 環境で安定動作を優先する例
-python transcribe_local.py downloads --device cpu --compute-type int8
+python main.py pipeline "@静寧Shizune" --enrich --llm-endpoint http://172.19.208.1:11434/v1 --llm-model qwen3.6:latest
 ```
 
-出力ファイルは既定で `transcripts/` に保存されます。
-- `.txt`: 文字起こし本文
-- `.json`: 文字起こし本文とタイムスタンプ付きセグメント
+既定の出力先:
+
+```text
+enriched/
+   ChannelName/
+      clean/
+         *.txt
+      summary/
+         *.md
+      chapters/
+         *.md
+```
 
 主なオプション:
-- `--device`: `auto`, `cuda`, `cpu` (既定: `auto`。ROCm/HIP 環境の `auto` は安全のため `cpu` にフォールバックします)
-- `--model`: `tiny`, `base`, `small`, `medium`, `large`, `turbo` などのサイズ指定、または Hugging Face のリポジトリ名（例: `kotoba-tech/kotoba-whisper-v2.0-faster`）
-- `--language`: `ja` などの言語ヒント、または `auto`
-- `--compute-type`: `auto`, `int8`, `float16`, `int8_float16`, `float32` (GPU で実行する場合は `float16` または `int8_float16` が推奨されます。CPU では `int8` を推奨。既定: `float16`)
-- `--task`: `transcribe` または `translate`
-- `--batch-size`: 並列処理するチャンク数。数値を大きくすると GPU 使用率と処理速度が上がりますが、メモリ消費量が増加します（既定: `16`）
-- `--delete-audio`: 文字起こし完了後（または既に文字起こし済みのスキップ時）に、入力メディアファイルを削除します
-- `--initial-prompt`: 文字起こし開始時に与えるプロンプト。句読点（「、」「。」）の付与を促すための初期値が設定されています（既定: `"こんにちは。今日はいい天気ですね。本日はよろしくお願いいたします。"`, 無効にするには空文字列を指定）
-- `--vad-threshold`: 音声検出の感度しきい値（0.0〜1.0）。数値を下げるとより小さな音も音声と判定します（既定: `0.5`）
+- `--llm-endpoint`: Ollama の OpenAI 互換 API エンドポイント（既定: `http://172.19.208.1:11434/v1`）
+- `--llm-model`: Ollama 側のモデル名（既定: `qwen3.6:latest`）
+- `--enrich-output-dir`: `pipeline` 実行時の enrich 出力先（既定: `enriched`）
+- `--llm-max-tokens`: LLM APIレスポンスの最大トークン数（既定: `3072`）
+- `--enrich-max-chars`: LLMに渡す1チャンクの最大文字数（既定: `1500`）
+- `--enrich-force`: 既存の enrich 成果物がある場合も再生成します
 
-音声ファイルを直接指定する例:
-
-```powershell
-python transcribe_local.py "downloads\\some_file.mp3" --language ja
-python transcribe_local.py "downloads\\20260614_【＃作業配信】色々作業＆雑談　休憩時筋トレ💪 _92 【セルフ受肉VTuber⧸静寧】_w0-3N5kjmT0.mp3"
-```
-
-既定の動作:
-- `model=turbo`
-- `task=transcribe`
-- `device=auto` (NVIDIA CUDA が利用可能であれば `cuda`、それ以外は `cpu`)
-- `compute_type=float16`
+備考:
+- Windows 側の Ollama では `Expose Ollama to the network` を有効にしておくと接続しやすくなります。
+- WSL2 から接続確認するには `curl http://172.19.208.1:11434/api/tags` を使います。
 
 
-## 5. 文字起こし結果をまとめる `merge_transcripts.py`
+## 5. 文字起こし結果をまとめる `main.py merge`
 
-`transcripts/` 配下の文字起こしファイル（`*.txt`）を、チャンネルごとに集約して1つのファイルに結合します。  
+指定ディレクトリ配下の文字起こしファイル（`*.txt`）を、チャンネルごとに集約して1つのファイルに結合します。  
 `_summary` フォルダ配下のファイルは自動的に除外されます。
+
+`main.py` 経由（推奨）:
 
 ```powershell
 # 月ごとに結合（デフォルト）
-python merge_transcripts.py
-python merge_transcripts.py --mode monthly
+python main.py merge
+python main.py merge --mode monthly
 
 # 年ごとに結合
-python merge_transcripts.py --mode yearly
+python main.py merge --mode yearly
 
 # チャンネルごとに1ファイルにまとめる
-python merge_transcripts.py --mode all
+python main.py merge --mode all
+
+# enriched の clean ディレクトリを結合対象にする
+python main.py merge --input-dir "enriched/静寧  Shizune - Live/clean"
+
+# タイムスタンプを除去して結合する（デフォルトは保持）
+python main.py merge --strip-timestamps
 ```
 
-出力先: `transcripts/{channel_name}_summary/`
+主なオプション:
+- `--input-dir`: 結合対象ディレクトリ（既定: `transcripts`）
+- `--output-dir`: 結合結果の出力先ルート（未指定時: `input-dir` が `transcripts` なら `transcripts`、それ以外は `input-dir` の親）
+- `--strip-timestamps`: 行頭の `[HH:MM:SS]` を除去して結合（既定は除去しない）
+
+出力先: `{output_dir}/{channel_name}_summary/`
 
 | モード | 出力ファイル名 |
 |---|---|

@@ -20,6 +20,9 @@ htmlcov/
 # Generated project outputs
 downloads/
 transcripts/
+enriched/
+models/
+temp-linux/
 *_test/
 
 # OS artifacts

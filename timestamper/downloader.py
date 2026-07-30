@@ -227,11 +227,6 @@ def run_downloader(args: argparse.Namespace) -> int:
     """YouTubeの動画を取得し、並行ダウンロード処理を行うCLI向けのメイン実行ハンドラーです。"""
     utils.SHOW_PROGRESS_TEXT = args.verbose_progress
 
-    # パイプライン指示、または整合性確認指示があれば、統合パイプラインを起動する
-    if getattr(args, "transcribe", False) or getattr(args, "check_consistency", False):
-        from .pipeline import run_pipeline
-        return run_pipeline(args)
-
     # Cookieファイルの決定
     cookie_file = getattr(args, "cookies", None)
     
