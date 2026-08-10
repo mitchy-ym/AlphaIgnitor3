@@ -7,7 +7,17 @@ DEFAULT_OLLAMA_MODEL = "qwen3.6:latest"
 
 def add_download_arguments(parser: argparse.ArgumentParser) -> None:
     """ダウンロードコマンド用の引数を追加します。"""
-    parser.add_argument("channel_handle", help="@から始まるチャンネル識別子（例: @Google）")
+    parser.add_argument(
+        "channel_handle",
+        nargs="?",
+        default=None,
+        help="@から始まるチャンネル識別子（例: @Google）。--video-url を指定する場合は省略できます。",
+    )
+    parser.add_argument(
+        "--video-url",
+        default=None,
+        help="単一のYouTube動画 URL を指定します。指定時は channel_handle は不要です。",
+    )
     parser.add_argument(
         "-f",
         "--format",

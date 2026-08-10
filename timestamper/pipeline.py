@@ -11,7 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from . import utils
-from .downloader import download_and_extract, get_live_videos, load_download_cache, save_download_cache
+from .downloader import download_and_extract, get_live_videos, get_videos_from_url, load_download_cache, save_download_cache
 from .enricher import enrich_transcript_file
 from .transcriber import load_whisper_model, transcribe_file
 from .utils import MEDIA_EXTENSIONS, ProgressPositionManager, log_error, log_info, log_warn, sanitize_cookie_file
@@ -53,6 +53,20 @@ def _find_pending_media_files(download_dir: Path, transcript_dir: Path) -> list[
         if not transcript_path.exists():
             pending.append(path)
     return pending
+
+
+def _find_incomplete_enrich_transcripts(transcript_dir: Path, enrich_output_dir: Path) -> list[Path]:
+    incomplete: list[Path] = []
+    if not transcript_dir.exists():
+        return incomplete
+    for transcript_path in sorted(transcript_dir.glob("*.txt")):
+        channel_dir = enrich_output_dir / transcript_dir.name
+        clean_path = channel_dir / "clean" / f"{transcript_path.stem}.txt"
+        summary_path = channel_dir / "summary" / f"{transcript_path.stem}.md"
+        chapters_path = channel_dir / "chapters" / f"{transcript_path.stem}.md"
+        if not (clean_path.exists() and summary_path.exists() and chapters_path.exists()):
+            incomplete.append(transcript_path)
+    return incomplete
 
 
 def _build_transcribe_args(args: argparse.Namespace, transcript_dir: Path) -> argparse.Namespace:
@@ -125,7 +139,15 @@ def run_pipeline(args: argparse.Namespace) -> int:
         sanitize_cookie_file(cookie_file)
 
     try:
-        videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser, cookie_file=cookie_file)
+        if getattr(args, "video_url", None):
+            if getattr(args, "channel_handle", None):
+                log_warn("--video-url が指定されているため channel_handle は無視されます。")
+            videos, channel_title = get_videos_from_url(args.video_url, args.cookies_from_browser, cookie_file=cookie_file)
+        else:
+            if not getattr(args, "channel_handle", None):
+                log_error(0, 0, "channel_handle または --video-url のいずれかを指定してください。")
+                return 1
+            videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser, cookie_file=cookie_file)
     except Exception as exc:
         log_error(0, 0, f"エラーが発生したため処理を中断します: {exc}")
         if getattr(args, "debug", False):
@@ -134,7 +156,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             traceback.print_exc()
         return 1
 
-    safe_channel_title = _safe_channel_title(channel_title, args.channel_handle)
+    safe_channel_title = _safe_channel_title(channel_title, args.channel_handle or args.video_url)
     download_dir = Path(args.output) if args.output else Path("downloads") / safe_channel_title
     download_dir.mkdir(parents=True, exist_ok=True)
 
@@ -142,9 +164,10 @@ def run_pipeline(args: argparse.Namespace) -> int:
     transcript_dir.mkdir(parents=True, exist_ok=True)
     enrich_output_dir = Path(args.enrich_output_dir)
 
-    safe_handle_filename = "".join(c for c in args.channel_handle if c.isalnum() or c in ("_", "-"))
+    safe_handle_source = args.channel_handle or args.video_url or "unknown"
+    safe_handle_filename = "".join(c for c in safe_handle_source if c.isalnum() or c in ("_", "-"))
     cache_file = download_dir / f"download_cache_{safe_handle_filename}.json"
-    cache_data = load_download_cache(cache_file, args.channel_handle)
+    cache_data = load_download_cache(cache_file, safe_handle_source)
     downloaded_ids = set(cache_data.get("downloaded_ids", []))
     transcript_ids = _existing_transcript_video_ids(videos, transcript_dir)
 
@@ -288,6 +311,19 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if fail_count > 0:
         failures.append((str(download_dir), f"download stage failed for {fail_count} video(s)"))
+
+    pending_media = _find_pending_media_files(download_dir, transcript_dir)
+    if pending_media:
+        log_warn(f"まだ文字起こしされていない音声ファイルがあります: {len(pending_media)} 件")
+        for path in pending_media:
+            log_warn(f"  未処理音声: {path}")
+
+    if args.enrich:
+        incomplete_enrich = _find_incomplete_enrich_transcripts(transcript_dir, enrich_output_dir)
+        if incomplete_enrich:
+            log_warn(f"まだenrichされていない transcript があります: {len(incomplete_enrich)} 件")
+            for path in incomplete_enrich:
+                log_warn(f"  未enrich transcript: {path}")
 
     if failures:
         for path, message in failures:

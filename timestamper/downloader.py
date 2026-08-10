@@ -1,5 +1,6 @@
 import json
 import random
+import shutil
 import time
 from pathlib import Path
 import yt_dlp
@@ -37,6 +38,15 @@ def save_download_cache(cache_file: Path, cache_data: dict):
     except Exception as e:
         log_warn(f"キャッシュファイルの保存に失敗しました: {e}")
 
+
+def _get_js_runtime_options() -> dict:
+    """yt-dlp の JavaScript ランタイム設定を返します。"""
+    node_path = shutil.which('node') or shutil.which('nodejs')
+    if node_path:
+        return {'js_runtimes': {'node': {'path': node_path}}}
+    return {}
+
+
 def get_live_videos(channel_handle: str, cookies_browser: str | None, cookie_file: str | Path | None = None) -> tuple[list[dict], str]:
     """指定されたチャンネル識別子から、アーカイブ配信完了したライブ動画のリストとチャンネルタイトルを取得します。"""
     handle = channel_handle if channel_handle.startswith("@") else f"@{channel_handle}"
@@ -50,6 +60,7 @@ def get_live_videos(channel_handle: str, cookies_browser: str | None, cookie_fil
         "quiet": True,
         "no_warnings": True,
     }
+    ydl_opts.update(_get_js_runtime_options())
     if cookies_browser:
         ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
     elif cookie_file:
@@ -87,10 +98,52 @@ def get_live_videos(channel_handle: str, cookies_browser: str | None, cookie_fil
             valid_videos.append({
                 "id": video_id,
                 "title": title,
-                "url": entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+                "url": entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
             })
             
         return valid_videos, channel_title
+
+
+def get_videos_from_url(video_url: str, cookies_browser: str | None, cookie_file: str | Path | None = None) -> tuple[list[dict], str]:
+    """指定された動画 URL から動画情報を取得します。"""
+    log_info(f"動画 URL の解析を開始します (URL: {video_url})...")
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+    }
+    ydl_opts.update(_get_js_runtime_options())
+    if cookies_browser:
+        ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
+    elif cookie_file:
+        ydl_opts["cookiefile"] = str(cookie_file)
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(video_url, download=False)
+        except Exception as e:
+            log_error(0, 0, f"動画URLの解析に失敗しました。URLや認証情報を確認してください: {e}")
+            raise e
+
+    entries = info.get("entries") or [info]
+    channel_title = info.get("uploader") or info.get("channel") or info.get("title") or "direct_video"
+    valid_videos = []
+    for entry in entries:
+        if not entry:
+            continue
+
+        video_id = entry.get("id")
+        title = entry.get("title")
+        if not video_id or not title:
+            continue
+
+        valid_videos.append({
+            "id": video_id,
+            "title": title,
+            "url": entry.get("webpage_url") or entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+        })
+
+    return valid_videos, channel_title
 
 def make_progress_hook(current_idx: int, total_cnt: int, video_title: str, pbar=None):
     """yt-dlp のダウンロード進捗フックを構築します。"""
@@ -176,6 +229,7 @@ def download_and_extract(
             "preferredquality": quality,
         }],
     }
+    ydl_opts.update(_get_js_runtime_options())
 
     if cookies_browser:
         ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
@@ -235,7 +289,15 @@ def run_downloader(args: argparse.Namespace) -> int:
 
     # 1. 動画一覧の取得
     try:
-        videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser, cookie_file=cookie_file)
+        if getattr(args, "video_url", None):
+            if getattr(args, "channel_handle", None):
+                log_warn("--video-url が指定されているため channel_handle は無視されます。")
+            videos, channel_title = get_videos_from_url(args.video_url, args.cookies_from_browser, cookie_file=cookie_file)
+        else:
+            if not getattr(args, "channel_handle", None):
+                log_error(0, 0, "channel_handle または --video-url のいずれかを指定してください。")
+                return 1
+            videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser, cookie_file=cookie_file)
     except Exception as e:
         log_error(0, 0, f"エラーが発生したため処理を中断します: {e}")
         if getattr(args, "debug", False):
@@ -256,9 +318,10 @@ def run_downloader(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # 3. キャッシュファイルの読み込み
-    safe_handle_filename = "".join(c for c in args.channel_handle if c.isalnum() or c in ("_", "-"))
+    safe_handle_source = args.channel_handle or args.video_url or "unknown"
+    safe_handle_filename = "".join(c for c in safe_handle_source if c.isalnum() or c in ("_", "-"))
     cache_file = output_dir / f"download_cache_{safe_handle_filename}.json"
-    cache_data = load_download_cache(cache_file, args.channel_handle)
+    cache_data = load_download_cache(cache_file, safe_handle_source)
 
     downloaded_ids = set(cache_data.get("downloaded_ids", []))
     
