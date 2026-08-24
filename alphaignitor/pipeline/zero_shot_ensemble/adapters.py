@@ -197,10 +197,11 @@ class TirexAdapter(ZeroShotAdapter):
         return self.forecast_result(close_context, horizon=horizon).point
 
     def forecast_result(self, close_context: np.ndarray, *, horizon: int) -> ForecastResult:
-        context = torch.from_numpy(np.ascontiguousarray(close_context, dtype=np.float32)).unsqueeze(0)
+        context = torch.from_numpy(np.ascontiguousarray(close_context.copy(), dtype=np.float32)).unsqueeze(0)
         quantiles, mean = self._model.forecast(
             context=context,
             prediction_length=int(horizon),
+            batch_size=1,
             output_type="numpy",
         )
         point = _to_float_list(np.asarray(mean, dtype=np.float32).reshape(-1), horizon=horizon)
@@ -213,11 +214,12 @@ class TirexAdapter(ZeroShotAdapter):
     def batch_forecast_result(self, close_contexts: list[np.ndarray], *, horizon: int) -> list[ForecastResult]:
         if not close_contexts:
             return []
-        matrix = np.stack([np.ascontiguousarray(ctx, dtype=np.float32) for ctx in close_contexts], axis=0)
+        matrix = np.stack([np.ascontiguousarray(ctx.copy(), dtype=np.float32) for ctx in close_contexts], axis=0)
         context = torch.from_numpy(matrix)
         quantiles, mean = self._model.forecast(
             context=context,
             prediction_length=int(horizon),
+            batch_size=len(close_contexts),
             output_type="numpy",
         )
         arr = np.asarray(mean, dtype=np.float32)
@@ -228,6 +230,9 @@ class TirexAdapter(ZeroShotAdapter):
             point = _to_float_list(arr[idx], horizon=horizon)
             q10, q50, q90 = _extract_quantiles(quantiles, batch_index=idx, horizon=horizon)
             out.append(ForecastResult(point=point, q10=q10, q50=q50, q90=q90))
+        return out
+
+
 ADAPTER_REGISTRY: dict[str, type[ZeroShotAdapter]] = {
     "chronos2": Chronos2Adapter,
     "timesfm": TimesFMAdapter,

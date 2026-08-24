@@ -123,16 +123,17 @@ def save_model_predictions(
     ticker: str,
     asof_trade_date: str,
     model: str,
-    predictions: list[float | None],
+    predictions: list[float | None] | None = None,
     q10_predictions: list[float | None] | None = None,
     q50_predictions: list[float | None] | None = None,
     q90_predictions: list[float | None] | None = None,
     error: str | None = None,
 ) -> None:
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    q10_predictions = q10_predictions or [None] * len(predictions)
-    q50_predictions = q50_predictions or [None] * len(predictions)
-    q90_predictions = q90_predictions or [None] * len(predictions)
+    preds = predictions if predictions is not None else [None] * 5
+    q10_predictions = q10_predictions or [None] * len(preds)
+    q50_predictions = q50_predictions or [None] * len(preds)
+    q90_predictions = q90_predictions or [None] * len(preds)
     rows = [
         (
             ticker,
@@ -146,7 +147,7 @@ def save_model_predictions(
             error,
             now,
         )
-        for idx, pred in enumerate(predictions)
+        for idx, pred in enumerate(preds)
     ]
     conn.executemany(
         """

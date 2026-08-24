@@ -6,7 +6,7 @@ portfolio:
   slot_size_pct: 0.2
   min_cash_buffer_usd: 500.0
 strategy:
-  min_predicted_return: 0.015
+  min_predicted_return: 0.025
   target_horizon: best
   holding_days: 3
   stop_loss_pct: null
@@ -15,7 +15,7 @@ strategy:
   consensus_level: all
   use_q10_filter: false
   min_directional_accuracy: 0.55
-  exit_on_down_signal: true
+  exit_on_down_signal: false
 execution:
   broker: moomoo
   order_type: MOO
