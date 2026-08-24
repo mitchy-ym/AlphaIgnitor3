@@ -1,0 +1,43 @@
+# Data / artifacts
+# Keep generated prediction/report outputs out of Git.
+predict/
+report/
+aggs/
+models/
+*_test/
+secrets/
+
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# OS/editor noise
+.DS_Store
+.vscode/
+
+# Local testing scripts
+test/
+
+# scripts/: track only .py and .ipynb, ignore everything else (recursively)
+scripts/**
+!scripts/**/
+!scripts/**/*.py
+!scripts/**/*.ipynb
+!scripts/**/*.sh
+
+# Runtime logs
+log/
+
+# Cache files
+cache/
+
+# Large archive files
+*.tar.gz
+*.tar
+*.zip

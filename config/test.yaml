@@ -1,0 +1,26 @@
+start_date: null
+end_date: null
+prediction_days: 5
+# 動作確認用は短い履歴・少ないtrialで実行時間を抑える。
+context_days: 60
+optuna_window_days: 10
+optuna_n_trials: 5
+optuna_timeout_minutes: 1
+optuna_storage_path: models_test/ensemble_optuna.sqlite3
+prediction_cache_path: cache_test/zero_shot_predictions.sqlite3
+ensemble_models:
+  - chronos2
+  - timesfm
+  - tirex
+chronos2_device_map: auto
+timesfm_device: auto
+tirex_backend: auto
+chronos2_batch_size: 32
+timesfm_batch_size: 128
+tirex_batch_size: 128
+min_available_models: 2
+optimizer_workers: 1
+top_n: 10
+max_tickers: 5
+model_root: models_test
+report_outdir: report_test

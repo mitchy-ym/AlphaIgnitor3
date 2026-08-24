@@ -1,0 +1,9 @@
+[submodule "submodules/tirex"]
+	path = submodules/tirex
+	url = https://github.com/NX-AI/tirex.git
+[submodule "submodules/timesfm"]
+	path = submodules/timesfm
+	url = https://github.com/google-research/timesfm.git
+[submodule "submodules/chronos-forecasting"]
+	path = submodules/chronos-forecasting
+	url = https://github.com/amazon-science/chronos-forecasting.git

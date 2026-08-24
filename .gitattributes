@@ -1,0 +1,2 @@
+finetune/** filter=lfs diff=lfs merge=lfs -text
+forecast/** filter=lfs diff=lfs merge=lfs -text
