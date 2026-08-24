@@ -1,0 +1,25 @@
+capital:
+  initial_cash_usd: 35000.0
+  currency: USD
+portfolio:
+  max_slots: 5
+  slot_size_pct: 0.2
+  min_cash_buffer_usd: 500.0
+strategy:
+  min_predicted_return: 0.015
+  target_horizon: best
+  holding_days: 3
+  stop_loss_pct: null
+  emergency_stop_loss_pct: 0.07
+  take_profit_pct: null
+  consensus_level: all
+  use_q10_filter: false
+  min_directional_accuracy: 0.55
+  exit_on_down_signal: true
+execution:
+  broker: moomoo
+  order_type: MOO
+  user_timezone: Asia/Singapore
+  operating_hours: 20:00-24:00 SGT
+  slippage_pct: 0.0005
+  commission_pct: 0.0005

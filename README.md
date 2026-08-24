@@ -108,6 +108,22 @@ HTMLレポートは全銘柄を対象に、各予測営業日を列として表�
 
 ランキングは全予測営業日のアンサンブル予測リターン平均順です。
 
+## moomoo 手動実運用 & バックテスト (スイングトレード)
+
+平日夜（SGT 20:00〜21:30）に PC を操作し、moomoo 証券アプリで寄付成行（MOO）＋ OCO（利確・損切）を発注して就寝中に完全自動で約定させるための運用支援システムです。
+
+詳細な操作ガイドは [📖 実運用取扱説明書 (`docs/TRADING_MANUAL_JA.md`)](file:///home/yuichi/workspace/AlphaIgnitor3/docs/TRADING_MANUAL_JA.md) をご覧ください。
+
+### 主なコマンド
+- **今夜の発注シート表示**: `python main.py action-sheet`
+- **買い発注のポジション記録**: `python main.py action-sheet --record-buys`
+- **保有中ポジションの一覧確認**: `python main.py action-sheet --list-positions`
+- **手仕舞い記録**: `python main.py action-sheet --record-exit <TICKER>`
+- **過去半年間の最適売買ルール探索**: `python main.py optimize-strategy --months 6 --trials 100`
+- **詳細バックテスト & HTMLレポート出力**: `python main.py backtest --months 6`
+
+設定は [`config/trading.yaml`](file:///home/yuichi/workspace/AlphaIgnitor3/config/trading.yaml) で管理（初期資金: $35,000 USD、3スロット運用、利確: +4.0%、非常時損切: -7.0%）。
+
 ## ログと進捗
 
 標準出力と `log/YYYY-MM-DD.log` に進捗を出します。長時間処理中も、モデルロード、価格パネル読込、銘柄ごとの予測キャッシュ生成、Optuna trial 実行状況が分かるようになっています。

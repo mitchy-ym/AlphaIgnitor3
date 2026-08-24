@@ -77,16 +77,18 @@ def _load_single_day_partition(
     df = read_day_partition(
         day_root=day_root,
         trade_date=trade_date,
-        columns=["ticker", "open", "close"],
+        columns=["ticker", "open", "high", "low", "close"],
         tickers=ticker_set,
     )
     if df.empty:
         return pd.DataFrame()
-    df = df[["ticker", "open", "close"]].copy()
+    cols = [c for c in ["ticker", "open", "high", "low", "close"] if c in df.columns]
+    df = df[cols].copy()
     df["ticker"] = df["ticker"].astype(str).str.upper()
     df["trade_date"] = trade_date.isoformat()
-    df["open"] = pd.to_numeric(df["open"], errors="coerce")
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    for c in ["open", "high", "low", "close"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
 
