@@ -1,43 +1,128 @@
-# Data / artifacts
-# Keep generated prediction/report outputs out of Git.
+# ==============================================================================
+# AlphaIgnitor3 .gitignore (Zero-based clean specification)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Runtime Artifacts & Generated Outputs
+# ------------------------------------------------------------------------------
 predict/
 report/
-aggs/
+log/
+logs/
+cache/
 models/
-*_test/
-secrets/
+aggs/
+scratch/
+tmp/
+*.log
 
-# Python cache / bytecode
+# ------------------------------------------------------------------------------
+# 2. Python Bytecode, Caches & Virtual Environments
+# ------------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
-.pytest_cache/
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Virtual environments
+# Virtual Environments
 .venv/
 venv/
+env/
 ENV/
+env.bak/
+venv.bak/
 
-# OS/editor noise
+# ------------------------------------------------------------------------------
+# 3. Testing, Coverage & Linter Caches
+# ------------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ------------------------------------------------------------------------------
+# 4. Sensitive Credentials & Local Secrets
+# ------------------------------------------------------------------------------
+secrets/
+*.env
+*.env.local
+*.env.*.local
+!secrets/credentials.env.example
+
+# ------------------------------------------------------------------------------
+# 5. Database, Storage & Large Data Caches
+# ------------------------------------------------------------------------------
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# ------------------------------------------------------------------------------
+# 6. IDE, Editors & Operating System Metadata
+# ------------------------------------------------------------------------------
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# VS Code
 .vscode/
+*.code-workspace
 
-# Local testing scripts
-test/
+# PyCharm / JetBrains
+.idea/
+*.iml
+*.iws
 
-# scripts/: track only .py and .ipynb, ignore everything else (recursively)
-scripts/**
-!scripts/**/
-!scripts/**/*.py
-!scripts/**/*.ipynb
-!scripts/**/*.sh
+# Editors
+*.swp
+*.swo
+*~
+.#*
 
-# Runtime logs
-log/
-
-# Cache files
-cache/
-
-# Large archive files
-*.tar.gz
+# ------------------------------------------------------------------------------
+# 7. Archives & Compressed Packages
+# ------------------------------------------------------------------------------
 *.tar
+*.tar.gz
+*.tgz
 *.zip
+*.rar
+*.7z
+*.bz2
