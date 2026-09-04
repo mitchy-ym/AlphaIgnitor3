@@ -15,14 +15,15 @@ from .downloader import download_and_extract, get_live_videos, get_videos_from_u
 from .enricher import enrich_transcript_file
 from .merge import merge_directory
 from .transcriber import load_whisper_model, transcribe_file
-from .utils import MEDIA_EXTENSIONS, ProgressPositionManager, log_error, log_info, log_warn, sanitize_cookie_file
-
-
-def _safe_channel_title(channel_title: str, channel_handle: str) -> str:
-    safe_title = "".join(c for c in channel_title if c.isalnum() or c in (" ", "_", "-")).strip()
-    if safe_title:
-        return safe_title
-    return channel_handle.replace("@", "")
+from .utils import (
+    MEDIA_EXTENSIONS,
+    ProgressPositionManager,
+    log_error,
+    log_info,
+    log_warn,
+    sanitize_channel_title,
+    sanitize_cookie_file,
+)
 
 
 def _resolve_channel_dir(base_dir: Path, safe_channel_title: str) -> Path:
@@ -136,6 +137,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
     utils.SHOW_PROGRESS_TEXT = getattr(args, "verbose_progress", False)
 
     cookie_file = getattr(args, "cookies", None)
+    if not cookie_file and Path("cookies/cookies.txt").is_file():
+        cookie_file = "cookies/cookies.txt"
     if cookie_file:
         sanitize_cookie_file(cookie_file)
 
@@ -146,18 +149,18 @@ def run_pipeline(args: argparse.Namespace) -> int:
             videos, channel_title = get_videos_from_url(args.video_url, args.cookies_from_browser, cookie_file=cookie_file)
         else:
             if not getattr(args, "channel_handle", None):
-                log_error(0, 0, "channel_handle または --video-url のいずれかを指定してください。")
+                log_error("channel_handle または --video-url のいずれかを指定してください。")
                 return 1
             videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser, cookie_file=cookie_file)
     except Exception as exc:
-        log_error(0, 0, f"エラーが発生したため処理を中断します: {exc}")
+        log_error(f"エラーが発生したため処理を中断します: {exc}")
         if getattr(args, "debug", False):
             import traceback
 
             traceback.print_exc()
         return 1
 
-    safe_channel_title = _safe_channel_title(channel_title, args.channel_handle or args.video_url)
+    safe_channel_title = sanitize_channel_title(channel_title, args.channel_handle or args.video_url)
     download_dir = Path(args.output) if args.output else Path("downloads") / safe_channel_title
     download_dir.mkdir(parents=True, exist_ok=True)
 
@@ -347,7 +350,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     if failures:
         for path, message in failures:
-            log_error(0, 0, f"失敗: {path} - {message}")
+            log_error(f"失敗: {path} - {message}")
         return 1
 
     return 0

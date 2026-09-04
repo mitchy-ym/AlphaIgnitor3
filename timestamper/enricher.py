@@ -8,10 +8,9 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .utils import log_info, log_success, log_warn
+from .utils import extract_timestamp_and_text, log_info, log_success, log_warn
 
 
-TIMESTAMP_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$")
 THINK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL | re.IGNORECASE)
 
 
@@ -38,24 +37,27 @@ def _strip_reasoning_and_fences(text: str) -> str:
     return text
 
 
-def _post_chat_completion(
+def _call_chat_completion(
     endpoint: str,
     model: str,
     messages: list[dict[str, str]],
-    schema: dict,
     timeout: float,
     max_tokens: int,
-    api_key_env: str | None,
-) -> dict:
-    payload = {
+    api_key_env: str | None = None,
+    schema: dict | None = None,
+) -> str:
+    """Ollama/OpenAI互換エンドポイントへ Chat Completion リクエストを送信し、テキスト内容を返します。"""
+    payload: dict = {
         "model": model,
         "messages": messages,
         "temperature": 0.1,
         "top_p": 0.9,
         "max_tokens": max_tokens,
         "reasoning_effort": "none",
-        "response_format": {"type": "json_schema", "schema": schema},
     }
+    if schema is not None:
+        payload["response_format"] = {"type": "json_schema", "schema": schema}
+
     headers = {"Content-Type": "application/json"}
     if api_key_env:
         api_key = os.environ.get(api_key_env)
@@ -87,6 +89,27 @@ def _post_chat_completion(
     if not content:
         raise RuntimeError("LLM response did not include text content")
 
+    return str(content).strip()
+
+
+def _post_chat_completion(
+    endpoint: str,
+    model: str,
+    messages: list[dict[str, str]],
+    schema: dict,
+    timeout: float,
+    max_tokens: int,
+    api_key_env: str | None,
+) -> dict:
+    content = _call_chat_completion(
+        endpoint=endpoint,
+        model=model,
+        messages=messages,
+        timeout=timeout,
+        max_tokens=max_tokens,
+        api_key_env=api_key_env,
+        schema=schema,
+    )
     try:
         return json.loads(_strip_reasoning_and_fences(content))
     except Exception as exc:
@@ -128,26 +151,17 @@ def _target_paths(output_root: Path, transcript_path: Path) -> tuple[Path, Path,
     return clean_path, summary_path, chapters_path
 
 
-def _extract_timestamps(text: str) -> list[str]:
-    timestamps: list[str] = []
-    for line in text.splitlines():
-        match = TIMESTAMP_RE.match(line.strip())
-        if match:
-            timestamps.append(match.group(1))
-    return timestamps
-
-
 def _normalize_clean_chunk(chunk: str) -> str:
     normalized_lines: list[str] = []
     for raw_line in chunk.splitlines():
         line = raw_line.rstrip()
-        match = TIMESTAMP_RE.match(line)
-        if not match:
+        extracted = extract_timestamp_and_text(line)
+        if not extracted:
             if line.strip():
                 normalized_lines.append(line.strip())
             continue
-        timestamp, text = match.groups()
-        normalized_lines.append(f"[{timestamp}] {text.strip()}")
+        timestamp, text = extracted
+        normalized_lines.append(f"[{timestamp}] {text}")
     return "\n".join(normalized_lines).strip()
 
 
@@ -211,15 +225,6 @@ def _chunk_schema() -> dict:
             },
         },
         "required": ["summary", "chapters"],
-        "additionalProperties": False,
-    }
-
-
-def _summary_schema() -> dict:
-    return {
-        "type": "object",
-        "properties": {"summary": {"type": "string"}},
-        "required": ["summary"],
         "additionalProperties": False,
     }
 
@@ -326,45 +331,15 @@ def _request_chunk_result_inner(
 def _request_final_summary(summary_parts: list[str], args: argparse.Namespace) -> str:
     if len(summary_parts) == 1:
         return _validate_summary(summary_parts[0])
-    url = args.llm_endpoint.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": args.llm_model,
-        "messages": _build_summary_messages("\n\n".join(summary_parts)),
-        "temperature": 0.1,
-        "top_p": 0.9,
-        "max_tokens": args.llm_max_tokens,
-        "reasoning_effort": "none",
-    }
-    headers = {"Content-Type": "application/json"}
-    api_key_env = getattr(args, "llm_api_key_env", None)
-    if api_key_env:
-        api_key = os.environ.get(api_key_env)
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=headers,
-        method="POST",
+    content = _call_chat_completion(
+        endpoint=args.llm_endpoint,
+        model=args.llm_model,
+        messages=_build_summary_messages("\n\n".join(summary_parts)),
+        timeout=args.llm_timeout,
+        max_tokens=args.llm_max_tokens,
+        api_key_env=getattr(args, "llm_api_key_env", None),
     )
-    try:
-        with urllib.request.urlopen(request, timeout=args.llm_timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"LLM server returned HTTP {exc.code}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to connect to Ollama: {exc.reason}") from exc
-
-    choices = data.get("choices") or []
-    if not choices:
-        raise RuntimeError("LLM response did not include choices")
-    message = choices[0].get("message") or {}
-    content = message.get("content") or choices[0].get("text")
-    if not content:
-        raise RuntimeError("LLM response did not include text content")
-    return _validate_summary(str(content).strip())
+    return _validate_summary(content)
 
 
 def enrich_transcript_file(transcript_path: Path, output_root: Path, args: argparse.Namespace) -> bool:
@@ -403,5 +378,5 @@ def enrich_transcript_file(transcript_path: Path, output_root: Path, args: argpa
         encoding="utf-8",
     )
 
-    log_success(0, 0, f"enrich完了: {transcript_path.name} ({time.time() - started_at:.2f}秒)")
+    log_success(f"enrich完了: {transcript_path.name} ({time.time() - started_at:.2f}秒)")
     return True

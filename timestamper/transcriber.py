@@ -9,8 +9,20 @@ import torch
 import argparse
 import subprocess
 
-from . import utils
-from .utils import MEDIA_EXTENSIONS, log_info, log_warn, log_error, format_seconds, get_media_duration
+from .utils import format_seconds, get_media_duration, log_info, log_success, log_warn
+
+
+class AudioChunk:
+    def __init__(self, index: int, start_time: float, duration: float, audio_data: np.ndarray):
+        self.index = index
+        self.start_time = start_time
+        self.duration = duration
+        self.audio_data = audio_data
+
+
+class ChunkError:
+    def __init__(self, exception: Exception):
+        self.exception = exception
 
 def select_device(device: str) -> str:
     """GPU 前提でデバイスを決定し、GPU が使えなければ例外を送出します。"""
@@ -36,12 +48,12 @@ def load_whisper_model(model_path: str, device: str, compute_type: str) -> "Batc
     if "/" in model_path and not Path(model_path).exists():
         try:
             from huggingface_hub import snapshot_download
-            print(f"Downloading model '{model_path}' from Hugging Face Hub...", flush=True)
+            log_info(f"Downloading model '{model_path}' from Hugging Face Hub...")
             model_path = snapshot_download(repo_id=model_path)
         except Exception as e:
-            print(f"Warning: Failed to pre-download model using huggingface_hub: {e}. Falling back to default loader.", file=sys.stderr, flush=True)
+            log_warn(f"Failed to pre-download model using huggingface_hub: {e}. Falling back to default loader.")
             
-    print(f"Loading faster-whisper model '{model_path}' on {active_device} (compute_type={compute_type})...", flush=True)
+    log_info(f"Loading faster-whisper model '{model_path}' on {active_device} (compute_type={compute_type})...")
     model_raw = WhisperModel(
         model_path,
         device=active_device,
@@ -119,7 +131,7 @@ def transcribe_file(
         else:
             total_duration = get_media_duration(media_path)
             if total_duration is None:
-                print(f"Warning: Could not determine total duration of {media_path.name}. Falling back to sequential mode.", file=sys.stderr, flush=True)
+                log_warn(f"Could not determine total duration of {media_path.name}. Falling back to sequential mode.")
                 use_async = False
 
     decode_options = build_decode_options(args)
@@ -138,20 +150,9 @@ def transcribe_file(
             curr_start += chunk_duration
             chunk_idx += 1
 
-        print(f"Asynchronous processing enabled: splitting {media_path.name} into {len(chunks)} chunks of max {chunk_duration}s.", flush=True)
+        log_info(f"Asynchronous processing enabled: splitting {media_path.name} into {len(chunks)} chunks of max {chunk_duration}s.")
 
-        class AudioChunk:
-            def __init__(self, index: int, start_time: float, duration: float, audio_data: np.ndarray):
-                self.index = index
-                self.start_time = start_time
-                self.duration = duration
-                self.audio_data = audio_data
-
-        class ChunkError:
-            def __init__(self, exception: Exception):
-                self.exception = exception
-
-        chunk_queue = queue.Queue(maxsize=2)
+        chunk_queue: queue.Queue[AudioChunk | ChunkError | None] = queue.Queue(maxsize=2)
 
         def audio_loader_worker():
             try:
@@ -186,7 +187,7 @@ def transcribe_file(
         loader_thread = threading.Thread(target=audio_loader_worker, daemon=True)
         loader_thread.start()
 
-        print(f"Starting batched Whisper transcription (batch_size={args.batch_size})...", flush=True)
+        log_info(f"Starting batched Whisper transcription (batch_size={args.batch_size})...")
 
         while True:
             item = chunk_queue.get()
@@ -300,5 +301,5 @@ def transcribe_file(
     write_outputs(text_path, json_path, result)
 
     elapsed_time = time.time() - start_time_all
-    print(f"Success! output={text_path} (device={active_device}, compute={active_compute_type}) - Time taken: {elapsed_time:.2f} seconds", flush=True)
+    log_success(f"文字起こし完了: {text_path.name} (device={active_device}, compute={active_compute_type}, 所要時間: {elapsed_time:.2f}秒)")
     return 0

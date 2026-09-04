@@ -2,6 +2,8 @@ import argparse
 import re
 from pathlib import Path
 
+from .utils import log_info, log_success, log_warn, strip_timestamp
+
 
 def get_year_month(file_path: Path) -> str | None:
     """ファイル名の先頭の日付（YYYYMMDD_）から YYYYMM を抽出します。"""
@@ -23,12 +25,7 @@ def get_year(file_path: Path) -> str | None:
 
 def clean_content(content: str) -> str:
     """各行の先頭にあるタイムスタンプ [HH:MM:SS] または [H:MM:SS] を削除します。"""
-    pattern = re.compile(r"^\[\d{1,2}:\d{2}:\d{2}\]\s*")
-    cleaned_lines = []
-    for line in content.splitlines():
-        cleaned_line = pattern.sub("", line)
-        cleaned_lines.append(cleaned_line)
-    return "\n".join(cleaned_lines)
+    return "\n".join(strip_timestamp(line) for line in content.splitlines())
 
 
 def resolve_channel_name(file_path: Path, input_dir: Path) -> str:
@@ -68,7 +65,7 @@ def merge_directory(
             output_root = input_dir.parent
 
     if not input_dir.exists():
-        print(f"Input directory not found: {input_dir}")
+        log_warn(f"Input directory not found: {input_dir}")
         return 1
 
     # 集約データを格納する辞書
@@ -85,7 +82,7 @@ def merge_directory(
 
     txt_files.sort(key=lambda x: x.name)
 
-    print(f"Found {len(txt_files)} text files to process in {input_dir}.")
+    log_info(f"Found {len(txt_files)} text files to process in {input_dir}.")
 
     for file_path in txt_files:
         channel_name = resolve_channel_name(file_path, input_dir)
@@ -108,7 +105,7 @@ def merge_directory(
         try:
             content = file_path.read_text(encoding="utf-8")
         except Exception as e:
-            print(f"Failed to read {file_path.name}: {e}")
+            log_warn(f"Failed to read {file_path.name}: {e}")
             continue
 
         merged_text = clean_content(content) if strip_timestamps else content
@@ -140,9 +137,9 @@ def merge_directory(
 
         try:
             output_file.write_text(merged_content, encoding="utf-8")
-            print(f"Created summary file: {channel_summary_dir.name}/{output_file.name} (Contains {len(data_list)} transcripts)")
+            log_success(f"Created summary file: {channel_summary_dir.name}/{output_file.name} (Contains {len(data_list)} transcripts)")
         except Exception as e:
-            print(f"Failed to write {output_file.name}: {e}")
+            log_warn(f"Failed to write {output_file.name}: {e}")
 
     return 0
 

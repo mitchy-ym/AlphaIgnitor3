@@ -1,7 +1,8 @@
 import datetime
-import sys
 import os
+import re
 import subprocess
+import sys
 from pathlib import Path
 
 # AMD ROCm RDNA3.5 iGPU/APU 互換性（Radeon 890M など）のための環境変数設定
@@ -10,6 +11,25 @@ os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "11.5.0")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 # OpenMP ランタイムの競合回避（Windows環境）
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+def _init_openmp_runtime() -> None:
+    """ROCm / ctranslate2 向けの OpenMP (libomp.so) ランタイムを事前ロードします。"""
+    if sys.platform.startswith("linux"):
+        import ctypes
+        for candidate in [
+            "/opt/rocm/lib/llvm/lib/libomp.so",
+            "/usr/lib/llvm-18/lib/libomp.so",
+            "/usr/lib/x86_64-linux-gnu/libomp.so",
+            "/usr/lib/x86_64-linux-gnu/libomp.so.5",
+        ]:
+            if os.path.exists(candidate):
+                try:
+                    ctypes.CDLL(candidate, mode=ctypes.RTLD_GLOBAL)
+                    break
+                except Exception:
+                    pass
+
+_init_openmp_runtime()
 
 # グローバルな環境へのインストールなしで ffmpeg を利用可能にする
 try:
@@ -24,38 +44,85 @@ SHOW_PROGRESS_TEXT = True
 # 対象とする音声・動画ファイルの拡張子
 MEDIA_EXTENSIONS = {".mp3", ".m4a", ".wav", ".opus", ".flac", ".mp4", ".mkv", ".webm"}
 
+TIMESTAMP_REGEX = re.compile(r"^\[(\d{1,2}:\d{2}:\d{2})\]\s*(.*)$")
+TIMESTAMP_PREFIX_REGEX = re.compile(r"^\[\d{1,2}:\d{2}:\d{2}\]\s*")
+
+
 def get_timestamp() -> str:
     """現在の時刻をフォーマットした文字列を返します。"""
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def log_info(message: str):
+
+def log_info(message: str) -> None:
     """情報ログを出力します。"""
     if SHOW_PROGRESS_TEXT:
         print(f"[INFO] {get_timestamp()} - {message}", flush=True)
 
-def log_progress(current: int, total: int, message: str):
-    """進捗ログを出力します。"""
-    if SHOW_PROGRESS_TEXT:
-        print(f"[PROGRESS] {get_timestamp()} - [{current}/{total}] {message}", flush=True)
 
-def log_success(current: int, total: int, message: str):
-    """成功ログを出力します。"""
+def log_progress(message_or_current: str | int, total: int | None = None, message: str | None = None) -> None:
+    """進捗ログを出力します。log_progress(current, total, message) または log_progress(message) を受け付けます。"""
     if SHOW_PROGRESS_TEXT:
-        print(f"[SUCCESS] {get_timestamp()} - [{current}/{total}] {message}", flush=True)
+        if isinstance(message_or_current, int) and total is not None and message is not None:
+            print(f"[PROGRESS] {get_timestamp()} - [{message_or_current}/{total}] {message}", flush=True)
+        else:
+            print(f"[PROGRESS] {get_timestamp()} - {message_or_current}", flush=True)
 
-def log_error(current: int, total: int, message: str):
-    """エラーログを出力します。無効時も標準エラー出力に出力されます。"""
+
+def log_success(message_or_current: str | int, total: int | None = None, message: str | None = None) -> None:
+    """成功ログを出力します。log_success(current, total, message) または log_success(message) を受け付けます。"""
     if SHOW_PROGRESS_TEXT:
-        print(f"[ERROR] {get_timestamp()} - [{current}/{total}] {message}", flush=True)
+        if isinstance(message_or_current, int) and total is not None and message is not None:
+            print(f"[SUCCESS] {get_timestamp()} - [{message_or_current}/{total}] {message}", flush=True)
+        else:
+            print(f"[SUCCESS] {get_timestamp()} - {message_or_current}", flush=True)
+
+
+def log_error(message_or_current: str | int, total: int | None = None, message: str | None = None) -> None:
+    """エラーログを出力します。log_error(current, total, message) または log_error(message) を受け付けます。"""
+    if isinstance(message_or_current, int) and total is not None and message is not None:
+        prefix = f"[{message_or_current}/{total}] "
+        text = f"{prefix}{message}"
     else:
-        print(f"[ERROR] {get_timestamp()} - [{current}/{total}] {message}", file=sys.stderr, flush=True)
+        text = str(message_or_current)
 
-def log_warn(message: str):
+    formatted = f"[ERROR] {get_timestamp()} - {text}"
+    if SHOW_PROGRESS_TEXT:
+        print(formatted, flush=True)
+    else:
+        print(formatted, file=sys.stderr, flush=True)
+
+
+def log_warn(message: str) -> None:
     """警告ログを出力します。無効時も標準エラー出力に出力されます。"""
+    formatted = f"[WARN] {get_timestamp()} - {message}"
     if SHOW_PROGRESS_TEXT:
-        print(f"[WARN] {get_timestamp()} - {message}", flush=True)
+        print(formatted, flush=True)
     else:
-        print(f"[WARN] {get_timestamp()} - {message}", file=sys.stderr, flush=True)
+        print(formatted, file=sys.stderr, flush=True)
+
+
+def sanitize_channel_title(channel_title: str, fallback: str | None = None) -> str:
+    """チャンネル名からファイルシステムで安全に使用できる文字列を生成します。"""
+    safe_title = "".join(c for c in channel_title if c.isalnum() or c in (" ", "_", "-")).strip()
+    if safe_title:
+        return safe_title
+    if fallback:
+        return fallback.replace("@", "")
+    return "channel"
+
+
+def extract_timestamp_and_text(line: str) -> tuple[str, str] | None:
+    """行頭のタイムスタンプ [HH:MM:SS] とテキストを抽出します。一致しない場合は None を返します。"""
+    match = TIMESTAMP_REGEX.match(line.strip())
+    if match:
+        return match.group(1), match.group(2).strip()
+    return None
+
+
+def strip_timestamp(line: str) -> str:
+    """行頭のタイムスタンプ [HH:MM:SS] または [H:MM:SS] を除去します。"""
+    return TIMESTAMP_PREFIX_REGEX.sub("", line)
+
 
 class ProgressPositionManager:
     """tqdm などのマルチスレッド進捗バーの表示位置を管理するクラスです。"""

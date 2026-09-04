@@ -121,22 +121,42 @@ def add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enrich-output-dir", default="enriched", help="enrich成果物の保存先 (デフォルト: enriched)")
     parser.add_argument(
         "--llm-endpoint",
+        "--enrich-endpoint",
+        dest="llm_endpoint",
         default=DEFAULT_OLLAMA_ENDPOINT,
         help=f"OllamaのOpenAI互換APIエンドポイント (デフォルト: {DEFAULT_OLLAMA_ENDPOINT})",
     )
     parser.add_argument(
         "--llm-model",
+        "--enrich-model",
+        dest="llm_model",
         default=DEFAULT_OLLAMA_MODEL,
         help=f"Ollamaで使用するモデル名 (デフォルト: {DEFAULT_OLLAMA_MODEL})",
     )
-    parser.add_argument("--llm-timeout", type=float, default=600.0, help="LLM APIリクエストのタイムアウト秒数")
-    parser.add_argument("--llm-max-tokens", type=int, default=3072, help="LLM APIレスポンスの最大トークン数")
+    parser.add_argument(
+        "--llm-timeout",
+        "--enrich-timeout",
+        dest="llm_timeout",
+        type=float,
+        default=600.0,
+        help="LLM APIリクエストのタイムアウト秒数 (デフォルト: 600.0)",
+    )
+    parser.add_argument(
+        "--llm-max-tokens",
+        "--enrich-max-tokens",
+        dest="llm_max_tokens",
+        type=int,
+        default=3072,
+        help="LLM APIレスポンスの最大トークン数 (デフォルト: 3072)",
+    )
     parser.add_argument(
         "--llm-api-key-env",
+        "--enrich-api-key-env",
+        dest="llm_api_key_env",
         default=None,
         help="ローカルLLM APIキーを読む環境変数名。未指定ならAuthorizationヘッダーを付けません。",
     )
-    parser.add_argument("--enrich-max-chars", dest="max_chars", type=int, default=1500, help="LLMに渡す1チャンクの最大文字数")
+    parser.add_argument("--enrich-max-chars", dest="max_chars", type=int, default=1500, help="LLMに渡す1チャンクの最大文字数 (デフォルト: 1500)")
     parser.add_argument("--enrich-force", dest="force", action="store_true", help="既存のenrich成果物がある場合も再生成します")
 
     parser.add_argument(

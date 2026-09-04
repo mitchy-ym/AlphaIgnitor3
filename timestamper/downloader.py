@@ -1,14 +1,27 @@
+import argparse
 import json
 import random
 import shutil
+import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import yt_dlp
 from tqdm import tqdm
-import argparse
 
 from . import utils
-from .utils import log_info, log_progress, log_success, log_error, log_warn, get_timestamp, sanitize_cookie_file
+from .utils import (
+    ProgressPositionManager,
+    get_timestamp,
+    log_error,
+    log_info,
+    log_progress,
+    log_success,
+    log_warn,
+    sanitize_channel_title,
+    sanitize_cookie_file,
+)
 
 def load_download_cache(cache_file: Path, channel_handle: str) -> dict:
     """ダウンロード済みの動画ID履歴キャッシュを読み込みます。"""
@@ -47,6 +60,17 @@ def _get_js_runtime_options() -> dict:
     return {}
 
 
+def _get_youtube_extractor_args() -> dict:
+    """YouTube の 403: Forbidden (GVS PO Token 回避) 用の extractor_args を返します。"""
+    return {
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"]
+            }
+        }
+    }
+
+
 def get_live_videos(channel_handle: str, cookies_browser: str | None, cookie_file: str | Path | None = None) -> tuple[list[dict], str]:
     """指定されたチャンネル識別子から、アーカイブ配信完了したライブ動画のリストとチャンネルタイトルを取得します。"""
     handle = channel_handle if channel_handle.startswith("@") else f"@{channel_handle}"
@@ -60,6 +84,7 @@ def get_live_videos(channel_handle: str, cookies_browser: str | None, cookie_fil
         "quiet": True,
         "no_warnings": True,
     }
+    ydl_opts.update(_get_youtube_extractor_args())
     ydl_opts.update(_get_js_runtime_options())
     if cookies_browser:
         ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
@@ -70,7 +95,7 @@ def get_live_videos(channel_handle: str, cookies_browser: str | None, cookie_fil
         try:
             info = ydl.extract_info(url, download=False)
         except Exception as e:
-            log_error(0, 0, f"チャンネルの解析に失敗しました。チャンネル名やネットワーク接続を確認してください: {e}")
+            log_error(f"チャンネルの解析に失敗しました。チャンネル名やネットワーク接続を確認してください: {e}")
             raise e
 
         channel_title = info.get("title", handle)
@@ -112,6 +137,7 @@ def get_videos_from_url(video_url: str, cookies_browser: str | None, cookie_file
         "quiet": True,
         "no_warnings": True,
     }
+    ydl_opts.update(_get_youtube_extractor_args())
     ydl_opts.update(_get_js_runtime_options())
     if cookies_browser:
         ydl_opts["cookiesfrombrowser"] = (cookies_browser,)
@@ -122,7 +148,7 @@ def get_videos_from_url(video_url: str, cookies_browser: str | None, cookie_file
         try:
             info = ydl.extract_info(video_url, download=False)
         except Exception as e:
-            log_error(0, 0, f"動画URLの解析に失敗しました。URLや認証情報を確認してください: {e}")
+            log_error(f"動画URLの解析に失敗しました。URLや認証情報を確認してください: {e}")
             raise e
 
     entries = info.get("entries") or [info]
@@ -229,6 +255,7 @@ def download_and_extract(
             "preferredquality": quality,
         }],
     }
+    ydl_opts.update(_get_youtube_extractor_args())
     ydl_opts.update(_get_js_runtime_options())
 
     if cookies_browser:
@@ -268,7 +295,7 @@ def download_and_extract(
         unrecoverable_keywords = [
             "unavailable", "private", "removed", "deleted", "copyright", 
             "members-only", "sign in", "confirm your age", "age-restricted",
-            "blocked", "not available", "403: Forbidden"
+            "blocked", "not available"
         ]
         is_unrecoverable = any(kw in error_msg.lower() for kw in unrecoverable_keywords)
         log_error(current_index, total_count, f"ダウンロード失敗: \"{title}\" (理由: {error_msg})")
@@ -283,7 +310,9 @@ def run_downloader(args: argparse.Namespace) -> int:
 
     # Cookieファイルの決定
     cookie_file = getattr(args, "cookies", None)
-    
+    if not cookie_file and Path("cookies/cookies.txt").is_file():
+        cookie_file = "cookies/cookies.txt"
+
     if cookie_file:
         sanitize_cookie_file(cookie_file)
 
@@ -295,20 +324,18 @@ def run_downloader(args: argparse.Namespace) -> int:
             videos, channel_title = get_videos_from_url(args.video_url, args.cookies_from_browser, cookie_file=cookie_file)
         else:
             if not getattr(args, "channel_handle", None):
-                log_error(0, 0, "channel_handle または --video-url のいずれかを指定してください。")
+                log_error("channel_handle または --video-url のいずれかを指定してください。")
                 return 1
             videos, channel_title = get_live_videos(args.channel_handle, args.cookies_from_browser, cookie_file=cookie_file)
     except Exception as e:
-        log_error(0, 0, f"エラーが発生したため処理を中断します: {e}")
+        log_error(f"エラーが発生したため処理を中断します: {e}")
         if getattr(args, "debug", False):
             import traceback
             traceback.print_exc()
         return 1
 
     # 2. 保存フォルダの決定
-    safe_channel_title = "".join(c for c in channel_title if c.isalnum() or c in (" ", "_", "-")).strip()
-    if not safe_channel_title:
-        safe_channel_title = args.channel_handle.replace("@", "")
+    safe_channel_title = sanitize_channel_title(channel_title, args.channel_handle or args.video_url)
 
     if args.output:
         output_dir = Path(args.output)
@@ -338,10 +365,6 @@ def run_downloader(args: argparse.Namespace) -> int:
     if not target_videos:
         log_info("処理対象の動画はありません。処理を終了します。")
         return 0
-
-    import threading
-    from concurrent.futures import ThreadPoolExecutor
-    from .utils import ProgressPositionManager
 
     success_count = 0
     fail_count = 0
