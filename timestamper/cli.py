@@ -105,7 +105,19 @@ def add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
         help="無音区間除外用の最小RMSしきい値 (デフォルト: 0.003)",
     )
 
-    parser.add_argument("--enrich", action="store_true", help="文字起こし完了後、Ollamaで整形・要約・章立てを生成します")
+    parser.add_argument(
+        "--enrich",
+        action="store_true",
+        dest="enrich",
+        default=True,
+        help="文字起こし完了後、Ollamaで整形・要約・章立てを生成します（デフォルト: 有効）。",
+    )
+    parser.add_argument(
+        "--no-enrich",
+        action="store_false",
+        dest="enrich",
+        help="文字起こし完了後のOllamaによるenrich処理を無効化します。",
+    )
     parser.add_argument("--enrich-output-dir", default="enriched", help="enrich成果物の保存先 (デフォルト: enriched)")
     parser.add_argument(
         "--llm-endpoint",
@@ -127,17 +139,43 @@ def add_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enrich-max-chars", dest="max_chars", type=int, default=1500, help="LLMに渡す1チャンクの最大文字数")
     parser.add_argument("--enrich-force", dest="force", action="store_true", help="既存のenrich成果物がある場合も再生成します")
 
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        dest="merge",
+        default=True,
+        help="文字起こし・enrich完了後、年ごとにテキストを結合します（デフォルト: 有効）。",
+    )
+    parser.add_argument(
+        "--no-merge",
+        action="store_false",
+        dest="merge",
+        help="パイプライン完了後のテキスト結合処理を無効化します。",
+    )
+    parser.add_argument(
+        "--merge-mode",
+        choices=["yearly", "monthly", "all"],
+        default="yearly",
+        help="パイプライン完了後の結合モード (デフォルト: yearly)",
+    )
+    parser.add_argument(
+        "--merge-strip-timestamps",
+        action="store_true",
+        default=False,
+        help="結合時にタイムスタンプを除去します (デフォルト: 保持)",
+    )
+
 
 def add_merge_arguments(parser: argparse.ArgumentParser) -> None:
     """merge コマンド用の引数を追加します。"""
     parser.add_argument(
         "--mode",
         choices=["monthly", "yearly", "all"],
-        default="monthly",
+        default="yearly",
         help=(
             "集約モードを選択します。"
-            " monthly: 月ごとに結合（デフォルト）。"
-            " yearly: 年ごとに結合。"
+            " yearly: 年ごとに結合（デフォルト）。"
+            " monthly: 月ごとに結合。"
             " all: チャンネルごとに1ファイルに結合。"
         ),
     )
@@ -159,3 +197,4 @@ def add_merge_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="各行先頭の [HH:MM:SS] タイムスタンプを除去して結合します（デフォルトは保持）。",
     )
+

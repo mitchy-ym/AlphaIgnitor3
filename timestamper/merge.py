@@ -44,24 +44,28 @@ def resolve_channel_name(file_path: Path, input_dir: Path) -> str:
 
     # input_dir 直下に txt がある場合
     if len(rel.parts) == 1:
+        if input_dir.resolve() != Path.cwd().resolve() and input_dir.name not in ("transcripts", "enriched", "", "."):
+            return input_dir.name
         return "general"
 
     # input_dir/<channel>/*.txt 形式を想定
     return rel.parts[0]
 
 
-def run_merge(args: argparse.Namespace) -> int:
-    mode = args.mode
-
-    input_dir = Path(args.input_dir)
-    if args.output_dir:
-        output_root = Path(args.output_dir)
-    elif input_dir.name == "transcripts":
-        output_root = Path("transcripts")
-    elif input_dir.name == "clean" and input_dir.parent.parent != input_dir.parent:
-        output_root = input_dir.parent.parent
-    else:
-        output_root = input_dir.parent
+def merge_directory(
+    input_dir: Path,
+    output_root: Path | None = None,
+    mode: str = "yearly",
+    strip_timestamps: bool = False,
+) -> int:
+    """指定されたディレクトリ配下のテキストファイルを集約（月次/年次/全件）します。"""
+    if output_root is None:
+        if input_dir.name == "transcripts":
+            output_root = Path("transcripts")
+        elif input_dir.name == "clean" and input_dir.parent.parent != input_dir.parent:
+            output_root = input_dir.parent.parent
+        else:
+            output_root = input_dir.parent
 
     if not input_dir.exists():
         print(f"Input directory not found: {input_dir}")
@@ -81,7 +85,7 @@ def run_merge(args: argparse.Namespace) -> int:
 
     txt_files.sort(key=lambda x: x.name)
 
-    print(f"Found {len(txt_files)} text files to process.")
+    print(f"Found {len(txt_files)} text files to process in {input_dir}.")
 
     for file_path in txt_files:
         channel_name = resolve_channel_name(file_path, input_dir)
@@ -107,7 +111,7 @@ def run_merge(args: argparse.Namespace) -> int:
             print(f"Failed to read {file_path.name}: {e}")
             continue
 
-        merged_text = clean_content(content) if args.strip_timestamps else content
+        merged_text = clean_content(content) if strip_timestamps else content
 
         if key not in aggregated_data:
             aggregated_data[key] = []
@@ -141,3 +145,14 @@ def run_merge(args: argparse.Namespace) -> int:
             print(f"Failed to write {output_file.name}: {e}")
 
     return 0
+
+
+def run_merge(args: argparse.Namespace) -> int:
+    input_dir = Path(args.input_dir)
+    output_root = Path(args.output_dir) if getattr(args, "output_dir", None) else None
+    return merge_directory(
+        input_dir=input_dir,
+        output_root=output_root,
+        mode=args.mode,
+        strip_timestamps=args.strip_timestamps,
+    )

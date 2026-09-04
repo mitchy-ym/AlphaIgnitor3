@@ -13,6 +13,7 @@ from tqdm import tqdm
 from . import utils
 from .downloader import download_and_extract, get_live_videos, get_videos_from_url, load_download_cache, save_download_cache
 from .enricher import enrich_transcript_file
+from .merge import merge_directory
 from .transcriber import load_whisper_model, transcribe_file
 from .utils import MEDIA_EXTENSIONS, ProgressPositionManager, log_error, log_info, log_warn, sanitize_cookie_file
 
@@ -308,6 +309,25 @@ def run_pipeline(args: argparse.Namespace) -> int:
         except Exception as exc:
             failures.append((str(transcript_dir), str(exc)))
             log_warn(f"既存 transcript の enrich に失敗しました: {exc}")
+
+    if getattr(args, "merge", True):
+        try:
+            mode = getattr(args, "merge_mode", "yearly")
+            strip_ts = getattr(args, "merge_strip_timestamps", False)
+
+            # 1. transcripts 配下のテキスト結合
+            if transcript_dir.exists():
+                log_info(f"文字起こしテキストの結合（{mode}）を実行します: {transcript_dir}")
+                merge_directory(input_dir=transcript_dir, mode=mode, strip_timestamps=strip_ts)
+
+            # 2. enrich (clean) 配下のテキスト結合
+            clean_dir = enrich_output_dir / safe_channel_title / "clean"
+            if args.enrich and clean_dir.exists():
+                log_info(f"enrich(clean) テキストの結合（{mode}）を実行します: {clean_dir}")
+                merge_directory(input_dir=clean_dir, mode=mode, strip_timestamps=strip_ts)
+        except Exception as exc:
+            failures.append((str(safe_channel_title), str(exc)))
+            log_warn(f"テキスト結合処理に失敗しました: {exc}")
 
     if fail_count > 0:
         failures.append((str(download_dir), f"download stage failed for {fail_count} video(s)"))

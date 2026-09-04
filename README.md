@@ -101,20 +101,24 @@ python main.py download "@ChannelHandle" --cookies-from-browser chrome
 - `--no-verbose-progress`, `--quiet`, `-q`: 進捗ログ（[INFO]や[PROGRESS]等）の標準出力を無効にし、プログレスバー表示に切り替えます（既定では標準出力テキスト表示がONになっています）
 - `--debug`: 詳細なログを出力する
 
-## 3-2. ダウンロードと文字起こし（トランスクリプション）の統合実行
+## 3-2. ダウンロードと文字起こし・後段処理・テキスト結合の統合実行
 
-音声のダウンロード、Whisper 文字起こし、必要であれば Ollama による後段処理を、ひとつのコマンドで実行します。
-ダウンロードは並列実行され、ダウンロード完了した音声から順次、単一の GPU 文字起こしワーカーで処理されます。`--enrich` を付けた場合は、そのまま Windows 側 Ollama に送って `clean / summary / chapters` を生成します。
+音声のダウンロード、Whisper 文字起こし、Ollama による後段処理（clean / summary / chapters）、および年別テキスト結合を、ひとつのコマンドで実行します。
+ダウンロードは並列実行され、ダウンロード完了した音声から順次、単一の GPU 文字起こしワーカーで処理されます。
+既定で `--enrich`（Ollama 後段処理）および年別テキスト結合（`--merge`）が有効になっているため、実行するだけで文字起こしから整形・要約・章立て・年別まとめファイルまで一括生成されます。
 
 ```powershell
-# ダウンロード完了後に自動で文字起こしを実行する
+# ダウンロード -> 文字起こし -> Ollama enrich -> 年別テキスト結合を一括実行（デフォルト）
 python main.py pipeline "@ChannelHandle"
 
 # 文字起こしオプションを指定する例 (GPUの使用、モデル指定、文字起こし後も音声を保持)
 python main.py pipeline "@ChannelHandle" --transcribe-device cuda --transcribe-model turbo --transcribe-keep-audio
 
-# 後段処理も含めて実行する例
-python main.py pipeline "@ChannelHandle" --enrich --llm-endpoint http://172.19.208.1:11434/v1 --llm-model qwen3.6:latest
+# Ollama enrich を無効化して文字起こし＋テキスト結合のみ実行する例
+python main.py pipeline "@ChannelHandle" --no-enrich
+
+# テキスト結合処理のみスキップする例
+python main.py pipeline "@ChannelHandle" --no-merge
 ```
 
 主な統合オプション:
@@ -124,10 +128,16 @@ python main.py pipeline "@ChannelHandle" --enrich --llm-endpoint http://172.19.2
 - `--transcribe-compute-type`: 計算精度（既定: `float16`）
 - `--transcribe-output-dir`: 文字起こしファイルの出力先（既定: `transcripts`）
 - `--transcribe-keep-audio`: 文字起こし完了後も元の音声ファイルを保持します（既定では自動削除）。
+- `--enrich`: 文字起こし完了後、Ollamaで整形・要約・章立てを生成します（既定: 有効）。
+- `--no-enrich`: Ollamaによる後段処理を無効化します。
+- `--merge`: パイプライン完了後、テキストを自動結合します（既定: 有効）。
+- `--no-merge`: テキスト結合処理を無効化します。
+- `--merge-mode`: 結合モード（既定: `yearly`, 選択肢: `yearly`, `monthly`, `all`）。
+- `--merge-strip-timestamps`: 結合時にタイムスタンプを除去します（既定: 保持）。
 - `--cookies`: Netscape形式のCookieファイルパス。既定では `cookies/cookies.txt` が自動的に読み込まれます。
 ## 4. Windows 側 Ollama で後段処理する
 
-`--enrich` を付けると、Whisper の文字起こし `.txt` を Windows 11 側で動作している Ollama に渡し、以下の3成果物を常にまとめて生成します。クラウド API には送信しません。
+パイプライン実行時、`--enrich` は既定で有効になっています（無効化する場合は `--no-enrich`）。Whisper の文字起こし `.txt` を Windows 11 側で動作している Ollama に渡し、以下の3成果物を常にまとめて生成します。クラウド API には送信しません。
 
 - `clean`: タイムスタンプ付きの整形済み文字起こし
 - `summary`: 要約
@@ -140,7 +150,7 @@ Ollama は Windows 側で起動しておきます。WSL2 からは `localhost` �
 - モデル名: `qwen3.6:latest`
 
 ```powershell
-python main.py pipeline "@静寧Shizune" --enrich --llm-endpoint http://172.19.208.1:11434/v1 --llm-model qwen3.6:latest
+python main.py pipeline "@静寧Shizune" --llm-endpoint http://172.19.208.1:11434/v1 --llm-model qwen3.6:latest
 ```
 
 既定の出力先:
@@ -154,6 +164,10 @@ enriched/
          *.md
       chapters/
          *.md
+   ChannelName_summary/
+      2023.txt
+      2024.txt
+      ...
 ```
 
 主なオプション:
@@ -172,17 +186,18 @@ enriched/
 ## 5. 文字起こし結果をまとめる `main.py merge`
 
 指定ディレクトリ配下の文字起こしファイル（`*.txt`）を、チャンネルごとに集約して1つのファイルに結合します。  
-`_summary` フォルダ配下のファイルは自動的に除外されます。
+`_summary` フォルダ配下のファイルは自動的に除外されます。  
+※ `pipeline` 実行時は末尾で自動実行されますが、本コマンドで個別・再集約することも可能です。
 
 `main.py` 経由（推奨）:
 
 ```powershell
-# 月ごとに結合（デフォルト）
+# 年ごとに結合（デフォルト）
 python main.py merge
-python main.py merge --mode monthly
-
-# 年ごとに結合
 python main.py merge --mode yearly
+
+# 月ごとに結合
+python main.py merge --mode monthly
 
 # チャンネルごとに1ファイルにまとめる
 python main.py merge --mode all
@@ -195,6 +210,7 @@ python main.py merge --strip-timestamps
 ```
 
 主なオプション:
+- `--mode`: 集約モード（既定: `yearly`, 選択肢: `yearly`, `monthly`, `all`）
 - `--input-dir`: 結合対象ディレクトリ（既定: `transcripts`）
 - `--output-dir`: 結合結果の出力先ルート（未指定時: `input-dir` が `transcripts` なら `transcripts`、それ以外は `input-dir` の親）
 - `--strip-timestamps`: 行頭の `[HH:MM:SS]` を除去して結合（既定は除去しない）
@@ -203,10 +219,11 @@ python main.py merge --strip-timestamps
 
 | モード | 出力ファイル名 |
 |---|---|
+| `yearly` | `{YYYY}.txt`（既定） |
 | `monthly` | `{YYYYMM}.txt` |
-| `yearly` | `{YYYY}.txt` |
 | `all` | `all.txt` |
 
 - `monthly` / `yearly` モードでは、ファイル名先頭に `YYYYMMDD_` の日付プレフィックスがないファイルはスキップされます。
 - `all` モードでは、日付プレフィックスの有無にかかわらずすべてのファイルが対象になります。
+
 
