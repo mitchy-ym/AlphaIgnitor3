@@ -477,8 +477,15 @@ def render_html(
     </style>
   </head>
 <body>
-  <h1>Daily Forecast Report</h1>
-  <p class="sub">Ranking by Day {max_horizon} q0.5 from the shared multi-step forecast run</p>
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px;">
+    <div>
+      <h1 style="margin:0 0 6px 0;">Daily Forecast Report</h1>
+      <p class="sub" style="margin:0;">Ranking by Day {max_horizon} q0.5 from the shared multi-step forecast run</p>
+    </div>
+    <a href="../index.html" target="_top" style="display:inline-flex; align-items:center; gap:6px; padding:8px 16px; background:#e0e7ff; color:#4338ca; text-decoration:none; border-radius:8px; font-weight:600; font-size:13px; box-shadow:0 1px 3px rgba(0,0,0,0.1); transition:all 0.2s;" onmouseover="this.style.background='#c7d2fe'" onmouseout="this.style.background='#e0e7ff'">
+      🏠 ポータル一覧へ戻る
+    </a>
+  </div>
 
   <div class="split-layout split-top-row">
     <div class="left-panel">

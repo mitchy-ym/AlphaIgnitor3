@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 import alphaignitor.common.trading_calendar as tc
 from alphaignitor.common.day_store import has_partition, write_day_partition
-from alphaignitor.common.massive_splits import get_api_key
+from alphaignitor.common._credentials import get_api_key
 
 
 _DEFAULT_GROUPED_URL = "https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{date}"

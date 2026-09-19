@@ -7,10 +7,13 @@
 # ------------------------------------------------------------------------------
 predict/
 report/
+report_test/
 log/
 logs/
 cache/
+cache_test/
 models/
+models_test/
 aggs/
 scratch/
 tmp/

@@ -49,6 +49,27 @@ def run(cfg: PipelineConfig, *, logger: EventLogger, root: Path) -> Path:
             msg="HTML レポート生成完了",
             kv={"report_file": str(html_path)},
         )
+
+        # ポータル index.html の自動更新
+        try:
+            from alphaignitor.pipeline.portal import generate_portal
+
+            portal_path = generate_portal(report_dir=root / cfg.report_outdir)
+            logger.emit(
+                level="INFO",
+                stage="report",
+                event="portal_done",
+                msg="ポータル index.html 生成完了",
+                kv={"portal_file": str(portal_path)},
+            )
+        except Exception as pe:
+            logger.emit(
+                level="WARN",
+                stage="report",
+                event="portal_failed",
+                msg=f"ポータル生成失敗 (スキップ): {pe}",
+            )
+
         return html_path
     except Exception as e:
         logger.emit(level="ERROR", stage="report", event="failed", msg=str(e))

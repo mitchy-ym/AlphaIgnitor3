@@ -290,7 +290,12 @@ def generate_backtest_html_report(
       <h1>📈 {report_title}</h1>
       <p style="margin:4px 0 0 0; color:#8b949e;">moomoo 手動執行モデル (SGT 20:00-24:00) | 初期資金: ${result.initial_capital:,.2f} USD</p>
     </div>
-    <div class="badge">Walk-Forward 検証済</div>
+    <div style="display:flex; gap:12px; align-items:center;">
+      <a href="../index.html" target="_top" style="display:inline-flex; align-items:center; gap:6px; padding:6px 14px; background:#21262d; border:1px solid #30363d; color:#58a6ff; text-decoration:none; border-radius:6px; font-weight:600; font-size:13px; transition:all 0.2s;">
+        🏠 ポータル一覧へ
+      </a>
+      <div class="badge">Walk-Forward 検証済</div>
+    </div>
   </div>
 
   {_render_action_sheet_html(action_sheet) if action_sheet else ""}

@@ -70,8 +70,7 @@ class EventLogger:
         # ログ行は人が読みやすい形式にする。run_id プレフィックスは行ごとに付けない。
         line = f"{ts} {lvl} {stage} {event} - {safe_msg}{suffix}"
 
-        # 重要: runtime.run_module_main が sys.stdout/stderr をリダイレクトするため、
-        # ロガー出力は sys.__stdout__ を直接使用して無限ループを回避する。
+        # ロガー出力は sys.__stdout__ を直接使用してリダイレクト等の影響を回避する。
         try:
             print(line, file=sys.__stdout__, flush=True)
         except Exception:
