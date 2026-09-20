@@ -28,6 +28,9 @@ class TradeRecord:
     target_horizon: int = 3
     stop_loss_price: float | None = None
     take_profit_price: float | None = None
+    sector: str = ""
+    signal_tier: int = 1
+    side: str = "LONG"  # "LONG" or "SHORT"
 
 
 @dataclass
@@ -39,6 +42,9 @@ class DailyPortfolioState:
     active_positions_count: int
     daily_return: float = 0.0
     drawdown: float = 0.0
+    entries_today: list[dict[str, Any]] = field(default_factory=list)
+    exits_today: list[dict[str, Any]] = field(default_factory=list)
+    holdings_today: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

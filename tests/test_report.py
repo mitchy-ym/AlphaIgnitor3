@@ -9,6 +9,7 @@ from alphaignitor.pipeline.zero_shot_ensemble.report import (
     _max_horizon,
     _mini_forecast_svg,
     _report_columns,
+    build_accuracy_html,
     build_charts_html,
     build_report_table,
     build_summary_dl,
@@ -57,12 +58,15 @@ class TestReport:
         meta_csv.write_text("Ticker,Name,Sector\nAAPL,Apple Inc.,Technology\n", encoding="utf-8")
 
         cols = _report_columns(max_horizon=5)
-        assert len(cols) == 11  # Name, Sector, Signal, Bull, Bear, Day1..Day5, Avg
+        assert len(cols) == 12  # Ticker, Name, Sector, Signal, Bull, Bear, Day1..Day5, Avg
+        assert cols[0] == ("Ticker", "ticker")
 
-        table = build_report_table(sample_forecast_df, ticker_meta_csv=meta_csv, max_horizon=5)
+        action_sheet = {"buys": [{"ticker": "AAPL", "order_type": "MOO", "shares": 10}]}
+        table = build_report_table(sample_forecast_df, ticker_meta_csv=meta_csv, max_horizon=5, action_sheet=action_sheet)
         assert len(table) == 1
         assert table.iloc[0]["ticker"] == "AAPL"
         assert table.iloc[0]["name"] == "Apple Inc."
+        assert bool(table.iloc[0]["is_recommended"]) is True
         assert table.iloc[0]["day1"] != ""
         assert table.iloc[0]["day5"] != ""
 
@@ -99,3 +103,29 @@ class TestReport:
         assert "<!doctype html>" in html_out
         assert "Apple Inc." in html_out
         assert "Daily Forecast Report" in html_out
+
+    def test_build_accuracy_html_with_dynamic_lookup(self, sample_forecast_df, temp_dir: Path):
+        from alphaignitor.common.day_store import write_day_partition
+
+        predict_dir = temp_dir / "predict"
+        predict_dir.mkdir()
+        day_root = temp_dir / "aggs" / "us_stock_day"
+        day_root.mkdir(parents=True)
+
+        # Write forecast parquet without actual_direction
+        df_no_act = sample_forecast_df.copy()
+        df_no_act["actual_direction"] = float("nan")
+        f_path = predict_dir / "2025-01-10_us_stock_ensemble_forecast.parquet"
+        df_no_act.to_parquet(f_path, index=False)
+
+        # Write day agg for horizon 1 (2025-01-11)
+        day1_df = pd.DataFrame([{"ticker": "AAPL", "close": 152.0, "open": 150.0, "volume": 1000}])
+        write_day_partition(day1_df, day_root=day_root, trade_date="2025-01-11")
+
+        html = build_accuracy_html(predict_dir=predict_dir, max_horizon=5, day_root=day_root)
+        assert '<table class="acc-table">' in html
+        assert "2025-01-10" in html
+        # Day 1 predicted up (151.5 > 150.0) and actual up (152.0 > 150.0) => 100.0%
+        assert "100.0%" in html
+        # Other days don't have day bars yet => N/A
+        assert "N/A" in html

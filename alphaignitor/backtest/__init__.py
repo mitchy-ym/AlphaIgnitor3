@@ -21,7 +21,12 @@ from .portfolio_tracker import (
     save_active_positions,
     update_positions_holding_and_prices,
 )
-from .report import format_action_sheet_text, generate_action_sheet, generate_backtest_html_report
+from .report import (
+    format_action_sheet_text,
+    generate_action_sheet,
+    generate_backtest_html_report,
+    load_backtest_kpi,
+)
 from .strategy import TradeSignal, evaluate_signals_for_asof
 
 __all__ = [
@@ -44,6 +49,7 @@ __all__ = [
     "generate_action_sheet",
     "format_action_sheet_text",
     "generate_backtest_html_report",
+    "load_backtest_kpi",
     "DEFAULT_ACTIVE_POSITIONS_PATH",
     "load_active_positions",
     "save_active_positions",

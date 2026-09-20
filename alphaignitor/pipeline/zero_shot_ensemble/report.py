@@ -6,6 +6,7 @@ import html
 import json
 import math
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -14,9 +15,9 @@ from alphaignitor.pipeline.report_daily_forecast._chart import _svg_line_chart
 from alphaignitor.pipeline.report_daily_forecast._data_loader import _load_ticker_meta, read_day_aggs_by_date
 from alphaignitor.pipeline.report_daily_forecast._html import render_html
 
+from .market_data import available_trade_dates, load_price_panel, ticker_series_map
 from .metrics import fmt_float, fmt_pct, metric_summary
-from .market_data import available_trade_dates, load_price_panel, parse_iso_date, ticker_series_map
-from .schema import METRIC_NAMES, METRIC_TARGETS
+from .schema import METRIC_NAMES, METRIC_TARGETS, display_direction
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +35,8 @@ def run_report(
     outdir: Path = Path("report"),
     asof_date: str | None = None,
     ticker_meta_csv: Path | None = None,
+    action_sheet: dict[str, Any] | None = None,
+    backtest_kpi: dict[str, Any] | None = None,
 ) -> Path:
     f_path = Path(forecast_path) if forecast_path else _latest_forecast_path(Path("predict"))
     df = pd.read_parquet(f_path)
@@ -42,7 +45,7 @@ def run_report(
 
     asof = asof_date or str(df["asof_trade_date"].iloc[0])
     meta_csv = Path(ticker_meta_csv) if ticker_meta_csv else Path("us_stock_list.csv")
-    table = build_report_table(df, ticker_meta_csv=meta_csv, max_horizon=max_horizon)
+    table = build_report_table(df, ticker_meta_csv=meta_csv, max_horizon=max_horizon, action_sheet=action_sheet)
     summary_dl = build_summary_dl(df=df, table=table, asof=asof, forecast_path=f_path, max_horizon=max_horizon)
     acc_html = build_accuracy_html(predict_dir=f_path.parent, max_horizon=max_horizon)
     charts_html = build_charts_html(df=df, table=table, max_horizon=max_horizon)
@@ -58,6 +61,9 @@ def run_report(
             acc_html=acc_html,
             charts_html=charts_html,
             max_horizon=max_horizon,
+            action_sheet=action_sheet,
+            backtest_kpi=backtest_kpi,
+            asof=asof,
         ),
         encoding="utf-8",
     )
@@ -100,6 +106,7 @@ def _max_horizon(df: pd.DataFrame) -> int:
 
 def _report_columns(max_horizon: int) -> list[tuple[str, str]]:
     cols = [
+        ("Ticker", "ticker"),
         ("Name", "name"),
         ("Sector", "sector"),
         ("Signal", "signal"),
@@ -112,12 +119,22 @@ def _report_columns(max_horizon: int) -> list[tuple[str, str]]:
     return cols
 
 
-def build_report_table(df: pd.DataFrame, *, ticker_meta_csv: Path, max_horizon: int) -> pd.DataFrame:
+def build_report_table(
+    df: pd.DataFrame,
+    *,
+    ticker_meta_csv: Path,
+    max_horizon: int,
+    action_sheet: dict[str, Any] | None = None,
+) -> pd.DataFrame:
     work = df.copy()
     work["ticker"] = work["ticker"].astype(str)
     work["horizon"] = pd.to_numeric(work["horizon"], errors="coerce").astype("Int64")
     work["ensemble_return"] = pd.to_numeric(work["ensemble_return"], errors="coerce")
     work["asof_close"] = pd.to_numeric(work["asof_close"], errors="coerce")
+
+    recommended_tickers = set()
+    if action_sheet and "buys" in action_sheet:
+        recommended_tickers = {str(b.get("ticker")) for b in action_sheet["buys"] if b.get("ticker")}
 
     meta = _load_ticker_meta(ticker_meta_csv)
     rows: list[dict] = []
@@ -134,6 +151,7 @@ def build_report_table(df: pd.DataFrame, *, ticker_meta_csv: Path, max_horizon: 
         meta_row = meta.get(str(ticker), {})
         horizons = list(range(1, max_horizon + 1))
         bull, bear, sig_text, sig_payload = _signal_for_ticker(row_by_h, horizons=horizons)
+        is_rec = str(ticker) in recommended_tickers
         row_out = {
             "ticker": str(ticker),
             "name": meta_row.get("name") or meta_row.get("company_name") or str(ticker),
@@ -144,6 +162,7 @@ def build_report_table(df: pd.DataFrame, *, ticker_meta_csv: Path, max_horizon: 
             "avg": _format_avg_return([row_by_h.get(h) for h in horizons]),
             "sort_avg": _avg_return_value([row_by_h.get(h) for h in horizons]),
             "signals_json": sig_payload,
+            "is_recommended": is_rec,
         }
         for horizon in horizons:
             row_out[f"day{horizon}"] = _format_day_return(row_by_h.get(horizon))
@@ -152,7 +171,7 @@ def build_report_table(df: pd.DataFrame, *, ticker_meta_csv: Path, max_horizon: 
     out = pd.DataFrame(rows)
     if out.empty:
         return out
-    out = out.sort_values(["bull", "sort_avg", "ticker"], ascending=[False, False, True]).reset_index(drop=True)
+    out = out.sort_values(["is_recommended", "bull", "sort_avg", "ticker"], ascending=[False, False, False, True]).reset_index(drop=True)
     return out
 
 
@@ -164,6 +183,9 @@ def render_report_html(
     acc_html: str,
     charts_html: str,
     max_horizon: int,
+    action_sheet: dict[str, Any] | None = None,
+    backtest_kpi: dict[str, Any] | None = None,
+    asof: str | None = None,
 ) -> str:
     return render_html(
         summary_dl=summary_dl,
@@ -172,6 +194,9 @@ def render_report_html(
         cols=cols,
         charts_html_block=charts_html,
         max_horizon=max_horizon,
+        action_sheet=action_sheet,
+        backtest_kpi=backtest_kpi,
+        asof=asof,
     )
 
 
@@ -196,11 +221,13 @@ def build_summary_dl(*, df: pd.DataFrame, table: pd.DataFrame, asof: str, foreca
     )
 
 
-def build_accuracy_html(*, predict_dir: Path, max_horizon: int) -> str:
+def build_accuracy_html(*, predict_dir: Path, max_horizon: int, day_root: Path | None = None) -> str:
     horizons = list(range(1, max_horizon + 1))
-    rows = _collect_recent_accuracy_rows(predict_dir=predict_dir, max_days=5, horizons=horizons)
+    rows = _collect_recent_accuracy_rows(
+        predict_dir=predict_dir, max_days=5, horizons=horizons, day_root=day_root
+    )
     if not rows:
-        return "<div class=\"acc-panel\"><h2>Directional Accuracy (Last 5 Trading Days)</h2><p class=\"note\">No historical forecast files with actuals were found.</p></div>"
+        return '<div class="acc-panel"><p class="note">No historical forecast files with actuals were found.</p></div>'
 
     body = []
     totals = {h: {"hit": 0, "valid": 0} for h in horizons}
@@ -224,14 +251,13 @@ def build_accuracy_html(*, predict_dir: Path, max_horizon: int) -> str:
             "</tr>"
         )
 
-    head_cols = ''.join(f"<th>Hit Day {h}</th>" for h in horizons)
-    foot_cols = ''.join(
-        f"<td>{_fmt_acc_cell(totals[h]["hit"], totals[h]["valid"] )}</td>" for h in horizons
+    head_cols = "".join(f"<th>Hit Day {h}</th>" for h in horizons)
+    foot_cols = "".join(
+        f"<td>{_fmt_acc_cell(totals[h]['hit'], totals[h]['valid'])}</td>" for h in horizons
     )
     return (
-        "<div class=\"acc-panel\">"
-        "<h2>Directional Accuracy (Last 5 Trading Days)</h2>"
-        "<table class=\"acc-table\">"
+        '<div class="acc-panel">'
+        '<table class="acc-table">'
         f"<thead><tr><th>As-Of Date</th><th>Valid / Total</th>{head_cols}</tr></thead>"
         f"<tbody>{''.join(body)}</tbody>"
         "<tfoot><tr>"
@@ -278,9 +304,10 @@ def build_charts_html(*, df: pd.DataFrame, table: pd.DataFrame, max_horizon: int
         try:
             all_dates = available_trade_dates(day_root, end_date=asof_date)
             needed = all_dates[-300:] if len(all_dates) > 300 else all_dates
-            panel = load_price_panel(day_root, dates=needed, tickers=tickers)
+            panel = load_price_panel(day_root, dates=needed, tickers=tickers, max_workers=16)
             history_map = ticker_series_map(panel)
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] Failed to load price panel for charts: {e}")
             history_map = {}
 
         try:
@@ -494,20 +521,51 @@ def _build_technical_svg(
         return _mini_forecast_svg(asof_close=asof_close, preds=preds)
 
 
-def _collect_recent_accuracy_rows(*, predict_dir: Path, max_days: int, horizons: list[int]) -> list[dict]:
-    files = sorted(Path(predict_dir).glob("*_ensemble_forecast.parquet"))
+def _collect_recent_accuracy_rows(
+    *, predict_dir: Path, max_days: int, horizons: list[int], day_root: Path | None = None
+) -> list[dict]:
+    raw_files = [
+        f for f in Path(predict_dir).glob("*_ensemble_forecast.parquet")
+        if re.match(r"^\d{4}-\d{2}-\d{2}", f.name)
+    ]
+    files = sorted(raw_files, key=lambda f: f.name)
     if not files:
         return []
+
+    if day_root is None:
+        candidate = Path("aggs/us_stock_day")
+        if candidate.exists():
+            day_root = candidate
+        elif (Path(predict_dir).parent / "aggs/us_stock_day").exists():
+            day_root = Path(predict_dir).parent / "aggs/us_stock_day"
+        else:
+            day_root = candidate
+
+    actual_cache: dict[str, dict[str, float]] = {}
 
     records = []
     for path in files[-20:]:
         try:
             part = pd.read_parquet(
                 path,
-                columns=["asof_trade_date", "horizon", "ensemble_direction", "actual_direction"],
+                columns=[
+                    "ticker",
+                    "asof_trade_date",
+                    "forecast_trade_date",
+                    "asof_close",
+                    "horizon",
+                    "ensemble_direction",
+                    "actual_direction",
+                ],
             )
         except Exception:
-            continue
+            try:
+                part = pd.read_parquet(
+                    path,
+                    columns=["asof_trade_date", "horizon", "ensemble_direction", "actual_direction"],
+                )
+            except Exception:
+                continue
         if part.empty:
             continue
 
@@ -518,6 +576,49 @@ def _collect_recent_accuracy_rows(*, predict_dir: Path, max_days: int, horizons:
         part = part.dropna(subset=["asof_trade_date", "horizon"])
         if part.empty:
             continue
+
+        # If actual_direction is missing, dynamically look up actual close from day_root
+        needs_fill = part["actual_direction"].isna() | (~part["actual_direction"].isin([-1, 1]))
+        if (
+            needs_fill.any()
+            and "forecast_trade_date" in part.columns
+            and "ticker" in part.columns
+            and "asof_close" in part.columns
+            and day_root.exists()
+        ):
+            f_dates = pd.to_datetime(part.loc[needs_fill, "forecast_trade_date"]).dt.date.unique()
+            for f_date in f_dates:
+                if pd.isna(f_date):
+                    continue
+                d_iso = f_date.isoformat()
+                if d_iso not in actual_cache:
+                    try:
+                        day_df = read_day_aggs_by_date(day_root=day_root, trade_date=d_iso)
+                        if not day_df.empty and "ticker" in day_df.columns and "close" in day_df.columns:
+                            actual_cache[d_iso] = dict(
+                                zip(day_df["ticker"].astype(str), day_df["close"].astype(float))
+                            )
+                        else:
+                            actual_cache[d_iso] = {}
+                    except Exception:
+                        actual_cache[d_iso] = {}
+
+            resolved_dirs = []
+            for r in part.itertuples(index=False):
+                cur_act = getattr(r, "actual_direction", float("nan"))
+                if pd.notna(cur_act) and cur_act in [-1, 1]:
+                    resolved_dirs.append(cur_act)
+                else:
+                    try:
+                        f_date_str = pd.to_datetime(r.forecast_trade_date).date().isoformat()
+                        act_close = actual_cache.get(f_date_str, {}).get(str(r.ticker))
+                        if act_close is not None and pd.notna(r.asof_close) and r.asof_close > 0:
+                            resolved_dirs.append(display_direction(r.asof_close, act_close))
+                        else:
+                            resolved_dirs.append(float("nan"))
+                    except Exception:
+                        resolved_dirs.append(float("nan"))
+            part["actual_direction"] = resolved_dirs
 
         asof = str(part["asof_trade_date"].max().date())
         by_h = {}

@@ -59,8 +59,15 @@ def scan_reports(report_dir: Path) -> dict:
     # Check backtest report
     backtest_info = None
     bt_file = report_dir / "backtest" / "backtest_report.html"
+    summary_file = report_dir / "backtest" / "backtest_summary.json"
     if bt_file.exists():
         stat = bt_file.stat()
+        summary_data = {}
+        if summary_file.exists():
+            try:
+                summary_data = json.loads(summary_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
         backtest_info = {
             "title": "AlphaIgnitor3 売買戦略バックテスト & moomoo運用レポート",
             "path": "./backtest/backtest_report.html",
@@ -68,6 +75,7 @@ def scan_reports(report_dir: Path) -> dict:
             "modified": datetime.datetime.fromtimestamp(stat.st_mtime).strftime(
                 "%Y-%m-%d %H:%M:%S"
             ),
+            "summary": summary_data,
         }
 
     return {
@@ -75,7 +83,8 @@ def scan_reports(report_dir: Path) -> dict:
         "backtest_info": backtest_info,
         "latest_daily": daily_reports[0] if daily_reports else None,
         "total_days": len(daily_reports),
-        "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+        "tz_name": datetime.datetime.now().astimezone().strftime("%Z") or "SGT",
     }
 
 
@@ -88,6 +97,25 @@ def render_portal_html(data: dict) -> str:
     generated_at = data["generated_at"]
 
     reports_json = json.dumps(daily_reports, ensure_ascii=False)
+
+    bt_kpi_val = "利用可能" if backtest_info else "未生成"
+    bt_kpi_color = "#38bdf8" if backtest_info else "#94a3b8"
+    bt_kpi_meta = "Trading Strategy & Backtest"
+    bt_desc = "累積リターン推移、シャープレシオ、最大ドローダウン、勝率、および moomoo 実口座連携シミュレーションの詳細レポートです。"
+
+    if backtest_info and backtest_info.get("summary"):
+        s = backtest_info["summary"]
+        if s.get("total_return_str"):
+            bt_kpi_val = s["total_return_str"]
+            bt_kpi_color = "#10b981" if not s["total_return_str"].startswith("-") else "#ef4444"
+            bt_kpi_meta = f"Sharpe {s.get('sharpe_ratio_str', '-')} | DD {s.get('max_drawdown_str', '-')}"
+            st = s.get("strategy", {})
+            policy_txt = "空売り対応 / 最低3銘柄・目標5銘柄(上限無) / セクター1推奨(最大2)"
+            bt_desc = (
+                f"直近6ヶ月検証: 累積リターン <strong>{s.get('total_return_str')}</strong> "
+                f"(Sharpe <strong>{s.get('sharpe_ratio_str')}</strong>, MaxDD <strong>{s.get('max_drawdown_str')}</strong>, "
+                f"勝率 {s.get('win_rate_str')})。LOO推奨指値 + {policy_txt}。"
+            )
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -634,13 +662,13 @@ def render_portal_html(data: dict) -> str:
         </div>
         <div class="kpi-card">
           <div class="kpi-label">バックテスト運用分析</div>
-          <div class="kpi-value" style="color: #38bdf8;">{"利用可能" if backtest_info else "未生成"}</div>
-          <div class="kpi-meta">Trading Strategy & Backtest</div>
+          <div class="kpi-value" style="color: {bt_kpi_color};">{bt_kpi_val}</div>
+          <div class="kpi-meta">{bt_kpi_meta}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">ポータル最終更新</div>
           <div class="kpi-value" style="font-size: 18px; margin-top: 4px;">{generated_at.split(' ')[0]}</div>
-          <div class="kpi-meta">{generated_at.split(' ')[1]} JST</div>
+          <div class="kpi-meta">{generated_at.split(' ')[1]} {data.get("tz_name", "SGT")}</div>
         </div>
       </div>
 
@@ -674,7 +702,7 @@ def render_portal_html(data: dict) -> str:
             <span class="feature-tag tag-backtest">STRATEGY BACKTEST</span>
             <h2 class="feature-title">売買戦略バックテスト & moomoo運用</h2>
             <p class="feature-desc">
-              累積リターン推移、シャープレシオ、最大ドローダウン、勝率、および moomoo 実口座連携シミュレーションの詳細レポートです。
+              {bt_desc}
             </p>
           </div>
           <div class="feature-action">

@@ -2,24 +2,36 @@ capital:
   initial_cash_usd: 35000.0
   currency: USD
 portfolio:
-  max_slots: 3
-  slot_size_pct: 0.3333333333333333
+  min_slots: 3
+  target_slots: 5
+  max_slots: null
+  slot_size_pct: 0.25
+  max_slot_size_pct: 0.3333
   min_cash_buffer_usd: 500.0
 strategy:
-  min_predicted_return: 0.02
-  target_horizon: best
-  holding_days: 2
+  min_predicted_return: 0.015
+  min_predicted_short_return: 0.10
+  allow_short: true
+  target_horizon: "2"
+  holding_days: 3
   stop_loss_pct: null
-  emergency_stop_loss_pct: 0.07
-  take_profit_pct: 0.05
+  emergency_stop_loss_pct: 0.10
+  take_profit_pct: 0.04
   consensus_level: all
   use_q10_filter: false
   min_directional_accuracy: 0.55
   exit_on_down_signal: false
+  max_per_sector: 2
+  sector_policy: tiered_1_to_2
 execution:
   broker: moomoo
-  order_type: MOO
+  order_type: LOO
   user_timezone: Asia/Singapore
   operating_hours: 20:00-24:00 SGT
   slippage_pct: 0.0005
   commission_pct: 0.0005
+  limit_price_mode: atr_adaptive
+  limit_atr_multiplier: 0.30
+  limit_expected_return_multiplier: 0.25
+  limit_max_gap_pct: 0.015
+  limit_min_gap_pct: 0.005
