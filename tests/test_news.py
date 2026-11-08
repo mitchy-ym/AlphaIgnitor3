@@ -237,7 +237,8 @@ class TestNewsAnalyzer:
         assert report.macro_score == 0.40
         assert report.macro_regime == "Bullish"
 
-    def test_analyze_news_report_fallback(self):
+    @patch("alphaignitor.common._credentials.get_gemini_api_key", return_value=None)
+    def test_analyze_news_report_fallback(self, mock_key):
         # Without API keys, analyze_news_report gracefully falls back to quant fallback
         articles = [
             NewsArticle(title="Market Rallies", url="https://example.com/rally", published_at="2025-01-15T12:00:00Z", source="CNBC")

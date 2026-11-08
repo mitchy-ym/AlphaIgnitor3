@@ -91,8 +91,9 @@ def analyze_news_with_gemini(
     quant_bull_pct: float = 33.3,
     quant_bear_pct: float = 33.3,
     quant_neutral_pct: float = 33.4,
-    model: str = "gemini-2.5-flash",
-    timeout_sec: float = 30.0,
+    model: str = "gemini-3.8-flash",
+    thinking_level: str = "HIGH",
+    timeout_sec: float = 35.0,
 ) -> MacroNewsReport:
     """Call Google Gemini API via lightweight HTTP REST to extract macro & sector sentiment."""
     news_text = _build_news_text(articles)
@@ -106,29 +107,43 @@ def analyze_news_with_gemini(
         quant_neutral_pct=round(quant_neutral_pct, 1),
     )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    models_to_try = [model]
+    for alt in ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"]:
+        if alt not in models_to_try:
+            models_to_try.append(alt)
+
+    generation_config: dict[str, Any] = {
+        "response_mime_type": "application/json",
+        "temperature": 0.2,
+    }
+    if thinking_level:
+        generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level.upper()}
+
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.2,
-        },
+        "generationConfig": generation_config,
     }
 
-    resp = requests.post(url, json=payload, timeout=timeout_sec)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Gemini API returned status {resp.status_code}: {resp.text[:300]}")
+    last_error: Exception | None = None
+    for cur_model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{cur_model}:generateContent?key={api_key}"
+        try:
+            resp = requests.post(url, json=payload, timeout=timeout_sec)
+            if resp.status_code == 200:
+                resp_json = resp.json()
+                candidates = resp_json.get("candidates") or []
+                if candidates:
+                    part = candidates[0].get("content", {}).get("parts", [{}])[0]
+                    raw_text = part.get("text", "")
+                    data = json.loads(raw_text)
+                    return _parse_llm_json_to_report(data, asof_date=asof_date, provider="gemini", model=cur_model, articles_count=len(articles))
+            last_error = RuntimeError(f"Gemini API ({cur_model}) status {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            last_error = e
 
-    resp_json = resp.json()
-    candidates = resp_json.get("candidates") or []
-    if not candidates:
-        raise RuntimeError("Gemini API returned empty candidates")
-
-    part = candidates[0].get("content", {}).get("parts", [{}])[0]
-    raw_text = part.get("text", "")
-    data = json.loads(raw_text)
-
-    return _parse_llm_json_to_report(data, asof_date=asof_date, provider="gemini", model=model, articles_count=len(articles))
+    if last_error:
+        raise last_error
+    raise RuntimeError("All Gemini models failed")
 
 
 def analyze_news_with_openai(
@@ -272,7 +287,8 @@ def analyze_news_report(
     articles: list[NewsArticle],
     asof_date: str,
     provider: str = "gemini",
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.8-flash",
+    thinking_level: str = "HIGH",
     target_tickers: list[str] | None = None,
     quant_bull_pct: float = 33.3,
     quant_bear_pct: float = 33.3,
@@ -300,6 +316,7 @@ def analyze_news_report(
                 quant_bear_pct=quant_bear_pct,
                 quant_neutral_pct=quant_neutral_pct,
                 model=model,
+                thinking_level=thinking_level,
             )
         elif prov == "openai" and openai_key:
             return analyze_news_with_openai(
@@ -321,7 +338,8 @@ def analyze_news_report(
                 quant_bull_pct=quant_bull_pct,
                 quant_bear_pct=quant_bear_pct,
                 quant_neutral_pct=quant_neutral_pct,
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
+                thinking_level=thinking_level,
             )
         elif openai_key:
             return analyze_news_with_openai(

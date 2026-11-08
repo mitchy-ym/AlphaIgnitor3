@@ -78,7 +78,8 @@ def run(cfg: PipelineConfig, *, logger: EventLogger, root: Path) -> Path:
                     articles=articles,
                     asof_date=asof_date,
                     provider=getattr(cfg, "news_llm_provider", "gemini"),
-                    model=getattr(cfg, "news_llm_model", "gemini-2.5-flash"),
+                    model=getattr(cfg, "news_llm_model", "gemini-3.8-flash"),
+                    thinking_level=getattr(cfg, "news_thinking_level", "HIGH"),
                 )
                 storage.save_macro_report(news_report)
                 logger.emit(

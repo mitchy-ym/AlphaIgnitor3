@@ -28,7 +28,8 @@ report_outdir: report
 # Macro & Sector News Sentiment Engine
 enable_news_sentiment: true
 news_llm_provider: gemini
-news_llm_model: gemini-2.5-flash
+news_llm_model: gemini-3.8-flash
+news_thinking_level: HIGH
 news_lookback_hours: 36
 news_macro_weight: 0.35
 news_sector_weight: 0.35

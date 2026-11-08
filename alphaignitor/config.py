@@ -44,7 +44,8 @@ class PipelineConfig:
     # Macro & Sector News Sentiment Engine
     enable_news_sentiment: bool = True
     news_llm_provider: str = "gemini"
-    news_llm_model: str = "gemini-2.5-flash"
+    news_llm_model: str = "gemini-3.8-flash"
+    news_thinking_level: str = "HIGH"
     news_lookback_hours: int = 36
     news_macro_weight: float = 0.35
     news_sector_weight: float = 0.35
