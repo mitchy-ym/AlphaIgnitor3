@@ -4,7 +4,13 @@ from .analyzer import analyze_news_report, generate_fallback_macro_report
 from .collector import collect_all_news
 from .integration import evaluate_news_hybrid_verdict
 from .schema import MacroNewsReport, NewsArticle, SectorSentiment, TickerNewsImpact
-from .storage import NewsSentimentStorage, connect, load_macro_report, save_macro_report
+from .storage import (
+    NewsSentimentStorage,
+    connect,
+    load_latest_macro_report,
+    load_macro_report,
+    save_macro_report,
+)
 
 __all__ = [
     "MacroNewsReport",
@@ -18,6 +24,7 @@ __all__ = [
     "evaluate_news_hybrid_verdict",
     "connect",
     "load_macro_report",
+    "load_latest_macro_report",
     "save_macro_report",
 ]
 

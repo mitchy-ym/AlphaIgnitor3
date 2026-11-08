@@ -85,10 +85,15 @@ def scan_reports(report_dir: Path) -> dict:
         news_db = report_dir.parent / "cache" / "news_sentiment.sqlite3"
         if not news_db.exists():
             news_db = Path("cache/news_sentiment.sqlite3")
-        if news_db.exists() and daily_reports:
+        if news_db.exists():
             storage = NewsSentimentStorage(news_db)
-            latest_date = daily_reports[0]["date"]
-            macro_report = storage.load_macro_report(latest_date)
+            macro_report = None
+            if daily_reports:
+                latest_date = daily_reports[0]["date"]
+                macro_report = storage.load_macro_report(latest_date)
+            if macro_report is None:
+                macro_report = storage.load_latest_macro_report()
+
             if macro_report is not None:
                 latest_macro = {
                     "asof_date": macro_report.asof_date,

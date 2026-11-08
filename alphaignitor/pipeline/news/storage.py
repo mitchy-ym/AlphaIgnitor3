@@ -96,6 +96,20 @@ def load_macro_report(conn: sqlite3.Connection, asof_date: str) -> MacroNewsRepo
     return None
 
 
+def load_latest_macro_report(conn: sqlite3.Connection) -> MacroNewsReport | None:
+    row = conn.execute(
+        """
+        SELECT report_json FROM macro_news_reports ORDER BY asof_date DESC LIMIT 1;
+        """
+    ).fetchone()
+    if row and row[0]:
+        try:
+            return MacroNewsReport.from_dict(json.loads(row[0]))
+        except Exception:
+            return None
+    return None
+
+
 def save_raw_articles(conn: sqlite3.Connection, articles: list[NewsArticle]) -> int:
     if not articles:
         return 0
@@ -165,6 +179,13 @@ class NewsSentimentStorage:
         conn = self.get_connection()
         try:
             return load_macro_report(conn, asof_date)
+        finally:
+            conn.close()
+
+    def load_latest_macro_report(self) -> MacroNewsReport | None:
+        conn = self.get_connection()
+        try:
+            return load_latest_macro_report(conn)
         finally:
             conn.close()
 
