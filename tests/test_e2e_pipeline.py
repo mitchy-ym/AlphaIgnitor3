@@ -53,10 +53,8 @@ class TestE2EPipeline:
             config_path=config_path,
             run_date=None,
             skip_download=True,
-            skip_build=True,
             skip_forecast=False,
             skip_report=False,
-            build_panel=False,
             root=temp_dir,
         )
 

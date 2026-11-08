@@ -46,7 +46,7 @@ if "${VENV_PYTHON}" main.py run-daily --config config/prod.yaml 2>&1 | tee -a "$
 
     if mountpoint -q "${NAS_TARGET_DIR}"; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🔄 Syncing reports to NAS Web root (${NAS_TARGET_DIR})..." | tee -a "${LOG_FILE}"
-        if rsync -rtv --update --no-p --no-o --no-g "${PROJECT_DIR}/report/" "${NAS_TARGET_DIR}/" >> "${LOG_FILE}" 2>&1; then
+        if rsync -rtv --inplace --update --no-p --no-o --no-g "${PROJECT_DIR}/report/" "${NAS_TARGET_DIR}/" >> "${LOG_FILE}" 2>&1; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ NAS sync completed successfully." | tee -a "${LOG_FILE}"
         else
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ WARNING: Failed to sync reports to NAS. Check network/mount." | tee -a "${LOG_FILE}"

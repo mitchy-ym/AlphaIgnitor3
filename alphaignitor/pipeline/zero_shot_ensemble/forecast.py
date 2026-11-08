@@ -146,6 +146,8 @@ def run_forecast(
         chronos2_device_map=str(chronos2_device_map),
         timesfm_device=str(timesfm_device),
         tirex_backend=str(tirex_backend),
+        timesfm_batch_size=int(timesfm_batch_size),
+        tirex_batch_size=int(tirex_batch_size),
     )
     print("[ensemble] model loading done", flush=True)
 

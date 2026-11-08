@@ -14,6 +14,11 @@ pyyaml
 requests
 scikit-learn
 optuna
+flashrnn>=1.0.8
+mlstm_kernels>=2.0.6
+ninja
+safetensors>=0.6
+narwhals>=2.0
 -e submodules/chronos-forecasting
 -e submodules/timesfm
--e submodules/tirex
+-e submodules/tirex-2

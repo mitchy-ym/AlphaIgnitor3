@@ -72,15 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="ダウンロードステージをスキップする (ローカルデータを使用)",
     )
     run.add_argument(
-        "--skip-build", action="store_true",
-        help="legacy パネルビルドをスキップする",
-    )
-    run.add_argument(
-        "--build-panel",
-        action="store_true",
-        help="legacy の日次特徴量パネルも生成する。zero-shot ensemble では通常不要。",
-    )
-    run.add_argument(
         "--skip-forecast", action="store_true",
         help="予測ステージをスキップする (predict/<date>_us_stock_ensemble_forecast.parquet が存在する場合)",
     )
@@ -139,10 +130,8 @@ def run_daily(
     trading_config_path: Path = DEFAULT_TRADING_CONFIG_PATH,
     run_date: str | None,
     skip_download: bool,
-    skip_build: bool,
     skip_forecast: bool = False,
     skip_report: bool = False,
-    build_panel: bool = False,
     optuna_trials: int | None = None,
     optuna_timeout_minutes: int | None = None,
     root: Path,
@@ -181,13 +170,12 @@ def run_daily(
             kv={"config": str(config_path), "log_file": str(logger.log_file)},
         )
 
-        # ── Stage 1: Download (+ optional legacy panel build) ────
+        # ── Stage 1: Download ──────────────────────────────────────
         build_stage.run(
             cfg,
             logger=logger,
             root=root,
             skip_download=skip_download,
-            skip_build=skip_build or not build_panel,
         )
 
         # ── Stage 2: Forecast / Optuna ensemble ──────────────────
@@ -509,10 +497,8 @@ def main() -> int:
             trading_config_path=args.trading_config,
             run_date=args.run_date,
             skip_download=bool(args.skip_download),
-            skip_build=bool(args.skip_build),
             skip_forecast=bool(args.skip_forecast),
             skip_report=bool(args.skip_report),
-            build_panel=bool(args.build_panel),
             optuna_trials=args.optuna_trials,
             optuna_timeout_minutes=args.optuna_timeout_minutes,
             root=PROJECT_ROOT,

@@ -18,13 +18,11 @@ def run(
     logger: EventLogger,
     root: Path,
     skip_download: bool = False,
-    skip_build: bool = True,
 ) -> Path | None:
     """日足データのダウンロードを実行する。
 
     Args:
         skip_download: REST ダウンロードをスキップし、既存の day_aggs を使う。
-        skip_build:    legacy 互換パラメータ（現在は常にダウンロードのみ実行）。
     """
     if skip_download:
         logger.emit(level="INFO", stage="download", event="skipped", msg="ダウンロードをスキップ")

@@ -37,6 +37,27 @@ class TestAdapters:
         assert q50 == [50.0, 50.0, 50.0]
         assert q90 == [90.0, 90.0, 90.0]
 
+    def test_extract_quantiles_timesfm3_and_tirex2(self):
+        # TimesFM 3.0 shape: (horizon=3, quantiles=9) -> [0.1..0.9]
+        tfm3_q = np.zeros((3, 9), dtype=np.float32)
+        tfm3_q[:, 0] = 11.0
+        tfm3_q[:, 4] = 55.0
+        tfm3_q[:, 8] = 99.0
+        q10, q50, q90 = _extract_quantiles(tfm3_q, batch_index=0, horizon=3)
+        assert q10 == [11.0, 11.0, 11.0]
+        assert q50 == [55.0, 55.0, 55.0]
+        assert q90 == [99.0, 99.0, 99.0]
+
+        # TiRex-2 shape: (quantiles=9, horizon=3) -> [0.1..0.9]
+        tx2_q = np.zeros((9, 3), dtype=np.float32)
+        tx2_q[0, :] = 12.0
+        tx2_q[4, :] = 56.0
+        tx2_q[8, :] = 98.0
+        q10_b, q50_b, q90_b = _extract_quantiles(tx2_q, batch_index=0, horizon=3)
+        assert q10_b == [12.0, 12.0, 12.0]
+        assert q50_b == [56.0, 56.0, 56.0]
+        assert q90_b == [98.0, 98.0, 98.0]
+
     def test_mock_adapter_flow(self, mock_adapters):
         adapter = mock_adapters["chronos2"]
         ctx = np.array([100.0, 101.0, 102.0], dtype=np.float32)

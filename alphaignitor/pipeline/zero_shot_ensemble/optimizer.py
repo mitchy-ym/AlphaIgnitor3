@@ -14,22 +14,7 @@ from optuna.trial import TrialState
 from .adapters import ZeroShotAdapter
 from .market_data import forecast_trade_dates, parse_iso_date
 from .schema import equal_weights, evaluable_direction_pair, normalize_weights
-from .storage import connect, load_model_prediction, load_model_prediction_details, save_best_weights, save_model_predictions
-
-
-def _has_complete_cached_prediction(conn: sqlite3.Connection, *, ticker: str, asof_trade_date: str, model: str, horizon: int) -> bool:
-    cached = load_model_prediction_details(
-        conn,
-        ticker=ticker,
-        asof_trade_date=asof_trade_date,
-        model=model,
-        horizon=horizon,
-    )
-    if cached is None:
-        return False
-    pred, q10, q50, q90, error = cached
-    values = [pred, q10, q50, q90]
-    return error is None and all(v is not None and math.isfinite(float(v)) for v in values)
+from .storage import connect, load_model_prediction, save_best_weights, save_model_predictions
 
 
 def _load_complete_prediction_keys(conn: sqlite3.Connection) -> set[tuple[str, str, str, int]]:

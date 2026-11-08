@@ -1,7 +1,7 @@
 start_date: null
 end_date: null
 prediction_days: 5
-# Chronos-2 / TimesFM / TiREX に渡す close 単系列の過去営業日数。
+# Chronos-2 / TimesFM 3.0 / TiRex-2 に渡す close 単系列の過去営業日数。
 context_days: 60
 # Optuna は直近1年分の walk-forward 方向精度を最大化する。
 optuna_window_days: 252
@@ -18,7 +18,7 @@ timesfm_device: auto
 tirex_backend: auto
 chronos2_batch_size: 96
 timesfm_batch_size: 640
-tirex_batch_size: 640
+tirex_batch_size: 256
 min_available_models: 2
 optimizer_workers: null
 top_n: 10

@@ -110,7 +110,6 @@ class Chronos2Adapter(ZeroShotAdapter):
         if "id" not in pred_df.columns:
             return [self.forecast_result(ctx, horizon=horizon) for ctx in close_contexts]
         ordered = pred_df.sort_values(["id", "timestamp"]).reset_index(drop=True)
-        out: list[list[float]] = []
         point_col = "predictions" if "predictions" in ordered.columns else "0.5"
         out_results: list[ForecastResult] = []
         for idx in range(len(close_contexts)):
@@ -129,41 +128,55 @@ class TimesFMAdapter(ZeroShotAdapter):
     def __init__(
         self,
         *,
-        model_id: str = "google/timesfm-2.5-200m-pytorch",
+        model_id: str = "google/timesfm-3.0-pytorch",
         context_days: int = 60,
         horizon: int = 3,
         device: str = "auto",
+        batch_size: int = 256,
     ) -> None:
-        import timesfm
-
         torch.set_float32_matmul_precision("high")
-        self._timesfm = timesfm
-        try:
-            self._model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(model_id, device=device)
-        except TypeError:
-            # Backward compatibility for TimesFM versions without explicit `device` argument.
-            self._model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(model_id)
-        self._model.compile(
-            timesfm.ForecastConfig(
-                max_context=int(context_days),
-                max_horizon=int(horizon),
-                normalize_inputs=True,
-                use_continuous_quantile_head=True,
-                force_flip_invariance=True,
-                infer_is_positive=True,
-                fix_quantile_crossing=True,
+        self._model_id = model_id
+        self._is_v3 = "3.0" in model_id or "timesfm-3" in model_id
+        resolved_device = _resolve_gpu_device(device)
+
+        if self._is_v3:
+            from timesfm3 import ModelConfig, TimesFM3Evaluator
+
+            config = ModelConfig(
+                checkpoint_path=model_id,
+                per_core_batch_size=max(int(batch_size), 1),
+                device=resolved_device,
             )
-        )
+            self._model = TimesFM3Evaluator(config)
+        else:
+            import timesfm
+
+            self._timesfm = timesfm
+            try:
+                self._model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(model_id, device=device)
+            except TypeError:
+                # Backward compatibility for TimesFM versions without explicit `device` argument.
+                self._model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(model_id)
+            self._model.compile(
+                timesfm.ForecastConfig(
+                    max_context=int(context_days),
+                    max_horizon=int(horizon),
+                    normalize_inputs=True,
+                    use_continuous_quantile_head=True,
+                    force_flip_invariance=True,
+                    infer_is_positive=True,
+                    fix_quantile_crossing=True,
+                )
+            )
 
     def forecast(self, close_context: np.ndarray, *, horizon: int) -> list[float]:
         return self.forecast_result(close_context, horizon=horizon).point
 
     def forecast_result(self, close_context: np.ndarray, *, horizon: int) -> ForecastResult:
-        context = np.asarray(close_context, dtype=np.float32)
-        point_forecast, quantiles = self._model.forecast(horizon=int(horizon), inputs=[context])
-        point = _to_float_list(np.asarray(point_forecast, dtype=np.float32).reshape(-1), horizon=horizon)
-        q10, q50, q90 = _extract_quantiles(quantiles, batch_index=0, horizon=horizon)
-        return ForecastResult(point=point, q10=q10, q50=q50, q90=q90)
+        results = self.batch_forecast_result([close_context], horizon=horizon)
+        if not results:
+            raise RuntimeError("TimesFMAdapter returned empty forecast result")
+        return results[0]
 
     def batch_forecast(self, close_contexts: list[np.ndarray], *, horizon: int) -> list[list[float]]:
         return [result.point for result in self.batch_forecast_result(close_contexts, horizon=horizon)]
@@ -172,6 +185,22 @@ class TimesFMAdapter(ZeroShotAdapter):
         if not close_contexts:
             return []
         contexts = [np.asarray(ctx, dtype=np.float32) for ctx in close_contexts]
+        if self._is_v3:
+            outputs = list(
+                self._model.predict_batch(
+                    contexts,
+                    horizon=int(horizon),
+                    return_quantiles=True,
+                    univariate=True,
+                )
+            )
+            out_v3: list[ForecastResult] = []
+            for item in outputs:
+                point = _to_float_list(np.asarray(item.forecast, dtype=np.float32).reshape(-1), horizon=horizon)
+                q10, q50, q90 = _extract_quantiles(item.quantiles, batch_index=0, horizon=horizon)
+                out_v3.append(ForecastResult(point=point, q10=q10, q50=q50, q90=q90))
+            return out_v3
+
         point_forecast, quantiles = self._model.forecast(horizon=int(horizon), inputs=contexts)
         arr = np.asarray(point_forecast, dtype=np.float32)
         if arr.ndim == 1:
@@ -187,26 +216,35 @@ class TimesFMAdapter(ZeroShotAdapter):
 class TirexAdapter(ZeroShotAdapter):
     name = "tirex"
 
-    def __init__(self, *, model_id: str = "NX-AI/TiRex", backend: str = "auto") -> None:
-        from tirex import load_model
+    def __init__(
+        self,
+        *,
+        model_id: str = "NX-AI/TiRex-2",
+        backend: str = "auto",
+        batch_size: int = 256,
+        pad_context: bool = False,
+    ) -> None:
+        torch.set_float32_matmul_precision("high")
+        self._model_id = model_id
+        self._batch_size = max(int(batch_size), 1)
+        self._pad_context = bool(pad_context)
 
-        kwargs = {} if backend == "auto" else {"backend": backend}
-        self._model = load_model(model_id, **kwargs)
+        import tirex2.model.component.flashrnn_slstm as flashrnn_slstm
+        from tirex2 import TimeseriesType, load_model
+
+        _patch_tirex2_rocm_flashrnn(flashrnn_slstm)
+        self._TimeseriesType = TimeseriesType
+        resolved_device = _resolve_gpu_device(backend)
+        self._model = load_model(model_id, device=resolved_device)
 
     def forecast(self, close_context: np.ndarray, *, horizon: int) -> list[float]:
         return self.forecast_result(close_context, horizon=horizon).point
 
     def forecast_result(self, close_context: np.ndarray, *, horizon: int) -> ForecastResult:
-        context = torch.from_numpy(np.ascontiguousarray(close_context.copy(), dtype=np.float32)).unsqueeze(0)
-        quantiles, mean = self._model.forecast(
-            context=context,
-            prediction_length=int(horizon),
-            batch_size=1,
-            output_type="numpy",
-        )
-        point = _to_float_list(np.asarray(mean, dtype=np.float32).reshape(-1), horizon=horizon)
-        q10, q50, q90 = _extract_quantiles(quantiles, batch_index=0, horizon=horizon)
-        return ForecastResult(point=point, q10=q10, q50=q50, q90=q90)
+        results = self.batch_forecast_result([close_context], horizon=horizon)
+        if not results:
+            raise RuntimeError("TirexAdapter returned empty forecast result")
+        return results[0]
 
     def batch_forecast(self, close_contexts: list[np.ndarray], *, horizon: int) -> list[list[float]]:
         return [result.point for result in self.batch_forecast_result(close_contexts, horizon=horizon)]
@@ -214,21 +252,29 @@ class TirexAdapter(ZeroShotAdapter):
     def batch_forecast_result(self, close_contexts: list[np.ndarray], *, horizon: int) -> list[ForecastResult]:
         if not close_contexts:
             return []
-        matrix = np.stack([np.ascontiguousarray(ctx.copy(), dtype=np.float32) for ctx in close_contexts], axis=0)
-        context = torch.from_numpy(matrix)
-        quantiles, mean = self._model.forecast(
-            context=context,
+        ts_list = [
+            self._TimeseriesType(
+                target=torch.from_numpy(np.ascontiguousarray(ctx.copy(), dtype=np.float32)).unsqueeze(0),
+                past_covariates=None,
+                future_covariates=None,
+            )
+            for ctx in close_contexts
+        ]
+        forecasts = self._model.forecast(
+            ts_list,
             prediction_length=int(horizon),
-            batch_size=len(close_contexts),
             output_type="numpy",
+            batch_size=min(len(ts_list), self._batch_size),
+            pad_context=self._pad_context,
         )
-        arr = np.asarray(mean, dtype=np.float32)
-        if arr.ndim == 1:
-            arr = arr.reshape(1, -1)
         out: list[ForecastResult] = []
-        for idx in range(arr.shape[0]):
-            point = _to_float_list(arr[idx], horizon=horizon)
-            q10, q50, q90 = _extract_quantiles(quantiles, batch_index=idx, horizon=horizon)
+        for f in forecasts:
+            q_arr = np.asarray(f, dtype=np.float32)
+            if q_arr.ndim == 3:
+                q_arr = q_arr[0]  # (num_quantiles=9, horizon)
+            q10, q50, q90 = _extract_quantiles(q_arr, batch_index=0, horizon=horizon)
+            median_idx = q_arr.shape[0] // 2
+            point = _to_float_list(q_arr[median_idx, :], horizon=horizon)
             out.append(ForecastResult(point=point, q10=q10, q50=q50, q90=q90))
         return out
 
@@ -253,6 +299,8 @@ def load_adapters(
     chronos2_device_map: str = "cuda",
     timesfm_device: str = "auto",
     tirex_backend: str = "auto",
+    timesfm_batch_size: int = 256,
+    tirex_batch_size: int = 256,
     allow_cpu: bool = False,
 ) -> dict[str, ZeroShotAdapter]:
     adapters: dict[str, ZeroShotAdapter] = {}
@@ -274,9 +322,13 @@ def load_adapters(
                 context_days=context_days,
                 horizon=horizon,
                 device=timesfm_device,
+                batch_size=timesfm_batch_size,
             )
         elif model_key == "tirex":
-            adapters[model] = TirexAdapter(backend=tirex_backend)
+            adapters[model] = TirexAdapter(
+                backend=tirex_backend,
+                batch_size=tirex_batch_size,
+            )
         elif model_key in ADAPTER_REGISTRY:
             adapters[model] = ADAPTER_REGISTRY[model_key]()
         else:
@@ -327,6 +379,30 @@ def _resolve_chronos2_device_map(device_map: str) -> str:
     if value.startswith("cuda"):
         return value
     return str(device_map)
+
+
+def _resolve_gpu_device(device_or_backend: str) -> str:
+    value = str(device_or_backend).strip().lower()
+    if value in {"", "auto", "torch", "triton", "triton_fused"} or value.startswith("cuda"):
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if value in {"cpu", "mps"}:
+        return value
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _patch_tirex2_rocm_flashrnn(flashrnn_slstm_module) -> None:
+    """Use FlashRNN's fused Triton backend on ROCm where nvcc is unavailable."""
+    orig_fn = getattr(flashrnn_slstm_module, "_flashrnn_backend", None)
+    if orig_fn is None or getattr(orig_fn, "_rocm_patched", False):
+        return
+
+    def _rocm_flashrnn_backend(device: str) -> str:
+        if device == "cuda" and getattr(torch.version, "hip", None) is not None:
+            return "triton_fused"
+        return orig_fn(device)
+
+    _rocm_flashrnn_backend._rocm_patched = True  # type: ignore[attr-defined]
+    flashrnn_slstm_module._flashrnn_backend = _rocm_flashrnn_backend
 
 
 def _to_float_list(values, *, horizon: int) -> list[float]:

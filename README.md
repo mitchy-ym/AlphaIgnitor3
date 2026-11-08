@@ -1,6 +1,6 @@
 # AlphaIgnitor3
 
-AlphaIgnitor3 は、米国株の日足 `close` 系列を使って Chronos-2 / TimesFM 2.5 / TiREX の zero-shot 予測を行い、Optuna で銘柄別の最適アンサンブル重みを探索する日次予測パイプラインです。
+AlphaIgnitor3 は、米国株の日足 `close` 系列を使って Chronos-2 / TimesFM 3.0 / TiRex-2 の zero-shot 予測を行い、Optuna で銘柄別の最適アンサンブル重みを探索する日次予測パイプラインです。
 
 ## 概要
 
@@ -12,15 +12,13 @@ AlphaIgnitor3 は、米国株の日足 `close` 系列を使って Chronos-2 / Ti
 | forecast | 3モデルの zero-shot 予測、Optuna重み最適化、アンサンブル | `predict/<asof>_us_stock_ensemble_forecast.parquet` |
 | report | アンサンブルHTMLレポート生成 | `report/<asof>/report.html` |
 
-legacy の特徴量パネル生成は通常不要です。必要な場合のみ `--build-panel` を指定します。
-
 ## インストール
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt` は `submodules/chronos-forecasting`、`submodules/timesfm`、`submodules/tirex` を editable install します。
+`requirements.txt` は `submodules/chronos-forecasting`、`submodules/timesfm`、`submodules/tirex-2` を editable install します。
 
 ## 認証情報
 
