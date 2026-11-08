@@ -199,7 +199,17 @@ def evaluate_signals_for_asof(
 
             uncertainty_spread = (q90_weighted - q10_weighted) / asof_close if (q90_weighted and q10_weighted) else 0.05
 
+            # Tail-risk & uncertainty filtering
+            max_spread = getattr(strategy_cfg, "max_uncertainty_spread", None)
+            if max_spread is not None and uncertainty_spread > float(max_spread):
+                continue
+
             if is_buy:
+                min_q10 = getattr(strategy_cfg, "min_q10_return", None)
+                if min_q10 is not None and q10_weighted is not None:
+                    q10_ret = (q10_weighted / asof_close) - 1.0
+                    if q10_ret < float(min_q10):
+                        continue
                 # Long consensus check
                 up_models = sum(1 for m, val in preds.items() if val > asof_close)
                 consensus_str = "all" if up_models == len(preds) else ("majority" if up_models >= 2 else "mixed")

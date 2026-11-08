@@ -44,6 +44,8 @@ class StrategyConfig:
     take_profit_pct: float | None = 0.04
     consensus_level: str = "all"  # "all", "majority", "none"
     use_q10_filter: bool = False
+    max_uncertainty_spread: float | None = 0.16  # Max allowed (q90 - q10)/close spread
+    min_q10_return: float | None = -0.06  # Tail risk: drop if 10th percentile downside is worse than -6%
     min_directional_accuracy: float = 0.55
     exit_on_down_signal: bool = False
     max_per_sector: int = 2  # Hard cap: max 2 tickers per sector
