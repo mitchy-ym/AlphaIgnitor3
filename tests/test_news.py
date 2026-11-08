@@ -509,3 +509,36 @@ class TestNewsStrategyAndReportIntegration:
         assert "Political & Economic News Pulse" in html or "Macro Political & Economic Pulse" in html
         assert "利下げ期待と好調な雇用統計" in html
         assert "Information Technology" in html
+
+
+    def test_portal_rendering_with_macro_pulse(self, tmp_path: Path):
+        from alphaignitor.pipeline.portal import render_portal_html, scan_reports
+        from alphaignitor.pipeline.news.storage import NewsSentimentStorage
+
+        report_dir = tmp_path / "report"
+        day_dir = report_dir / "2025-01-10"
+        day_dir.mkdir(parents=True)
+        (day_dir / "report.html").write_text("<html>Report</html>", encoding="utf-8")
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True)
+        db_path = cache_dir / "news_sentiment.sqlite3"
+        storage = NewsSentimentStorage(db_path)
+        storage.save_macro_report(
+            MacroNewsReport(
+                asof_date="2025-01-10",
+                macro_score=0.35,
+                macro_regime="Moderately Bullish",
+                event_risk_level="MEDIUM",
+                event_risk_note="米CPI発表直前",
+            )
+        )
+
+        data = scan_reports(report_dir)
+        assert data["latest_macro"] is not None
+        assert data["latest_macro"]["macro_score"] == 0.35
+
+        portal_html = render_portal_html(data)
+        assert "政治・経済マクロ地合い" in portal_html
+        assert "Moderately Bullish (+0.35)" in portal_html
+        assert "米CPI発表直前" in portal_html
