@@ -82,12 +82,94 @@ def _render_table(
     return f"<table{id_attr}><thead><tr>{head}</tr></thead>\n<tbody>\n" + "\n".join(rows_html) + "\n</tbody></table>"
 
 
+def _render_macro_pulse(nr_dict: dict[str, Any] | None) -> str:
+    """政治・経済マクロ概況およびセクターセンチメントのパルスウィジェットを生成する。"""
+    if not nr_dict:
+        return ""
+    macro_score = float(nr_dict.get("macro_score", 0.0))
+    macro_regime = str(nr_dict.get("macro_regime", "Neutral"))
+    event_risk = str(nr_dict.get("event_risk_level", "LOW")).upper()
+    event_note = nr_dict.get("event_risk_note")
+    drivers = nr_dict.get("key_drivers_ja", [])
+    sector_scores = nr_dict.get("sector_scores", {})
+    count = int(nr_dict.get("articles_analyzed_count", 0))
+
+    if macro_score >= 0.20:
+        regime_badge = f'<span class="macro-regime-badge badge-bull">🟢 {html.escape(macro_regime)} ({macro_score:+.2f})</span>'
+    elif macro_score <= -0.20:
+        regime_badge = f'<span class="macro-regime-badge badge-bear">🔴 {html.escape(macro_regime)} ({macro_score:+.2f})</span>'
+    else:
+        regime_badge = f'<span class="macro-regime-badge badge-neutral">🟡 {html.escape(macro_regime)} ({macro_score:+.2f})</span>'
+
+    risk_badge = ""
+    if event_risk == "HIGH":
+        risk_badge = f'<span class="macro-risk-badge risk-high">⚠️ イベント警戒: {html.escape(str(event_note or "高リスク"))}</span>'
+    elif event_risk == "MEDIUM":
+        risk_badge = f'<span class="macro-risk-badge risk-med">⚡ イベント注視{": " + html.escape(str(event_note)) if event_note else ""}</span>'
+
+    drivers_html = ""
+    if drivers:
+        items = "".join(f"<li>{html.escape(str(d))}</li>" for d in drivers[:3])
+        drivers_html = f'<ul class="macro-drivers-list">{items}</ul>'
+
+    sectors_html = ""
+    if sector_scores:
+        sec_chips = []
+        for sec, val in sorted(
+            sector_scores.items(),
+            key=lambda x: -float(x[1].get("score", 0.0) if isinstance(x[1], dict) else x[1]),
+        ):
+            s_score = float(val.get("score", 0.0) if isinstance(val, dict) else val)
+            s_reason = str(val.get("reason_ja", "") if isinstance(val, dict) else "")
+            if s_score >= 0.15:
+                chip_cls = "sec-chip-bull"
+            elif s_score <= -0.15:
+                chip_cls = "sec-chip-bear"
+            else:
+                chip_cls = "sec-chip-neutral"
+            title_attr = html.escape(f"{sec}: {s_score:+.2f} ({s_reason})" if s_reason else f"{sec}: {s_score:+.2f}")
+            sec_chips.append(f'<span class="sec-chip {chip_cls}" title="{title_attr}">{html.escape(sec)} <b>{s_score:+.2f}</b></span>')
+        sectors_html = f'<div class="macro-sectors-row">{"".join(sec_chips)}</div>'
+
+    return f"""
+    <div class="macro-pulse-container">
+      <div class="macro-pulse-header">
+        <div class="macro-title-box">
+          <span class="macro-pulse-icon">🌐</span>
+          <span class="macro-pulse-heading">Macro Political & Economic Pulse</span>
+          {regime_badge}
+          {risk_badge}
+        </div>
+        <div class="macro-meta-box">
+          <span>解析ニュース: <b>{count}件</b> (FRB/CNBC/Bloomberg/Polygon)</span>
+        </div>
+      </div>
+      <div class="macro-pulse-content">
+        {drivers_html}
+        {sectors_html}
+      </div>
+    </div>
+    """
+
+
 def _render_executive_cockpit(
     action_sheet: dict[str, Any] | None,
     backtest_kpi: dict[str, Any] | None,
     asof: str,
+    news_report: Any | None = None,
 ) -> str:
     """最上部のエグゼクティブ・コックピット（Action Sheet & Strategy Evidence）を生成する。"""
+    nr_dict = None
+    if news_report is not None:
+        if hasattr(news_report, "to_dict"):
+            nr_dict = news_report.to_dict()
+        elif isinstance(news_report, dict):
+            nr_dict = news_report
+    elif action_sheet and isinstance(action_sheet.get("news_report"), dict):
+        nr_dict = action_sheet["news_report"]
+
+    macro_pulse_html = _render_macro_pulse(nr_dict)
+
     # ── 1. Action Sheet (左カード) ──────────────────────────────────────
     if action_sheet:
         available_slots = int(action_sheet.get("available_slots", 5))
@@ -171,6 +253,15 @@ def _render_executive_cockpit(
             sector_badge = f'<span class="ticket-sector">{sector}</span>' if sector else ""
             tier_badge = '<span class="ticket-tier">拡張枠(2銘柄目)</span>' if tier == 2 else ""
 
+            n_summary = html.escape(str(b.get("news_summary") or ""))
+            n_score = b.get("news_score")
+            news_badge = ""
+            if n_score is not None:
+                n_sign = "+" if n_score >= 0 else ""
+                n_col = "text-green" if n_score > 0.15 else ("text-red" if n_score < -0.15 else "")
+                news_badge = f'<span class="ticket-news-badge {n_col}">📰 {n_sign}{n_score:.2f}</span>'
+            news_note = f'<div class="ticket-news-note">📰 <b>ニュース・材料</b>: {n_summary}</div>' if n_summary else ""
+
             ret_sign = "+" if exp_ret >= 0 else ""
             buys_html += f"""
             <div class="action-ticket {ticket_cls}">
@@ -180,6 +271,7 @@ def _render_executive_cockpit(
                   <span class="ticket-ticker">{tk}</span>
                   {sector_badge}
                   {tier_badge}
+                  {news_badge}
                   <span class="ticket-exp">期待値: <b class="{exp_col}">{ret_sign}{exp_ret}%</b> ({consensus})</span>
                 </div>
                 <button class="copy-order-btn" data-copy="{copy_payload}" onclick="copyOrderText(this)" title="発注パラメータをコピー">
@@ -204,6 +296,7 @@ def _render_executive_cockpit(
                   <span class="t-val text-red"><b>{sl_str}</b></span>
                 </div>
               </div>
+              {news_note}
               <div class="ticket-footer-note">
                 💡 moomoo設定: <b>指値 ({limit_str})</b> / 有効期間 <b>Day</b> / 時間外取引 (Outside RTH) <b>OFF</b>
               </div>
@@ -344,6 +437,8 @@ def _render_executive_cockpit(
         </div>
       </div>
 
+      {macro_pulse_html}
+
       <div class="cockpit-grid">
         <!-- Action Sheet -->
         <div class="cockpit-card action-card">
@@ -387,6 +482,7 @@ def render_html(
     action_sheet: dict[str, Any] | None = None,
     backtest_kpi: dict[str, Any] | None = None,
     asof: str | None = None,
+    news_report: Any | None = None,
 ) -> str:
     """完全なHTMLレポートドキュメントを生成する。"""
     # 銘柄センチメント集計
@@ -408,7 +504,12 @@ def render_html(
 
     asof_label = html.escape(str(asof or (all_tbl.iloc[0]["asof_trade_date"] if "asof_trade_date" in all_tbl.columns and not all_tbl.empty else "Today")))
 
-    cockpit_html = _render_executive_cockpit(action_sheet, backtest_kpi, asof=asof_label)
+    cockpit_html = _render_executive_cockpit(
+        action_sheet,
+        backtest_kpi,
+        asof=asof_label,
+        news_report=news_report,
+    )
 
     return f"""<!doctype html>
 <html lang="ja">
@@ -771,6 +872,99 @@ def render_html(
     .ticket-footer-note b {{
       color: var(--slate-800);
     }}
+    .ticket-news-badge {{
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--slate-200);
+      background: var(--slate-50);
+    }}
+    .ticket-news-note {{
+      margin-top: 6px;
+      font-size: 11px;
+      color: #334155;
+      background: #f8fafc;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border-left: 3px solid #6366f1;
+    }}
+
+    /* ── Macro & News Pulse ───────────────────────────────────────────────── */
+    .macro-pulse-container {{
+      background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+    }}
+    .macro-pulse-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px dashed #cbd5e1;
+    }}
+    .macro-title-box {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .macro-pulse-heading {{
+      font-family: 'Outfit', sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--slate-800);
+    }}
+    .macro-regime-badge {{
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 6px;
+    }}
+    .badge-bull {{ background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }}
+    .badge-bear {{ background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }}
+    .badge-neutral {{ background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }}
+    .macro-risk-badge {{
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 6px;
+    }}
+    .risk-high {{ background: #fee2e2; color: #dc2626; border: 1px solid #f87171; }}
+    .risk-med {{ background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }}
+    .macro-meta-box {{
+      font-size: 11px;
+      color: var(--slate-500);
+    }}
+    .macro-drivers-list {{
+      margin: 0 0 10px 0;
+      padding-left: 18px;
+      font-size: 12px;
+      color: var(--slate-700);
+    }}
+    .macro-drivers-list li {{
+      margin-bottom: 2px;
+    }}
+    .macro-sectors-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }}
+    .sec-chip {{
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      white-space: nowrap;
+      cursor: help;
+    }}
+    .sec-chip-bull {{ background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }}
+    .sec-chip-bear {{ background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }}
+    .sec-chip-neutral {{ background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; }}
 
     /* Reserves styles */
     .reserves-box {{

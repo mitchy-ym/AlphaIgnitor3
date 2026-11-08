@@ -37,6 +37,63 @@ def run(cfg: PipelineConfig, *, logger: EventLogger, root: Path) -> Path:
 
     action_sheet = None
     backtest_kpi = None
+    news_report = None
+
+    # Load news sentiment report if enabled
+    if getattr(cfg, "enable_news_sentiment", False):
+        try:
+            from alphaignitor.pipeline.news import (
+                MacroNewsReport,
+                NewsSentimentStorage,
+                analyze_news_report,
+                collect_all_news,
+            )
+            asof_date = cfg.run_date
+            if not asof_date:
+                import datetime as dt
+                asof_date = dt.date.today().isoformat()
+
+            storage = NewsSentimentStorage(root / "cache/news_sentiment.sqlite3")
+            cached_report = storage.load_macro_report(asof_date)
+            if cached_report is not None:
+                news_report = cached_report
+                logger.emit(
+                    level="INFO",
+                    stage="report",
+                    event="news_sentiment_loaded_cache",
+                    msg=f"キャッシュ済みニュースセンチメントを読込: Regime={news_report.macro_regime}, Score={news_report.macro_score:+.2f}",
+                )
+            else:
+                logger.emit(
+                    level="INFO",
+                    stage="report",
+                    event="news_sentiment_collect_start",
+                    msg="政治・経済ニュースの収集およびセンチメント解析を開始",
+                )
+                articles = collect_all_news(
+                    lookback_hours=getattr(cfg, "news_lookback_hours", 24),
+                    cache_dir=root / "cache",
+                )
+                news_report = analyze_news_report(
+                    articles=articles,
+                    asof_date=asof_date,
+                    provider=getattr(cfg, "news_llm_provider", "gemini"),
+                    model=getattr(cfg, "news_llm_model", "gemini-2.5-flash"),
+                )
+                storage.save_macro_report(news_report)
+                logger.emit(
+                    level="INFO",
+                    stage="report",
+                    event="news_sentiment_analyzed",
+                    msg=f"ニュース解析完了: Regime={news_report.macro_regime}, Score={news_report.macro_score:+.2f}, 記事数={news_report.articles_analyzed_count}",
+                )
+        except Exception as ne:
+            logger.emit(
+                level="WARN",
+                stage="report",
+                event="news_sentiment_skipped",
+                msg=f"ニュースセンチメント取得失敗 (Quant-Onlyで継続): {ne}",
+            )
 
     # Load backtest KPI summary if available
     try:
@@ -99,6 +156,8 @@ def run(cfg: PipelineConfig, *, logger: EventLogger, root: Path) -> Path:
                 tickers=resolved_tickers,
                 series_by_ticker=series_by_ticker,
                 strategy_cfg=trading_cfg.strategy,
+                news_report=news_report,
+                adverse_news_threshold=getattr(cfg, "news_adverse_threshold", -0.45),
             )
             if cache_conn:
                 cache_conn.close()
@@ -108,6 +167,7 @@ def run(cfg: PipelineConfig, *, logger: EventLogger, root: Path) -> Path:
                 signals=signals,
                 trading_config=trading_cfg,
                 series_by_ticker=series_by_ticker,
+                news_report=news_report,
             )
             logger.emit(
                 level="INFO",
@@ -131,6 +191,7 @@ def run(cfg: PipelineConfig, *, logger: EventLogger, root: Path) -> Path:
             ticker_meta_csv=root / "us_stock_list.csv",
             action_sheet=action_sheet,
             backtest_kpi=backtest_kpi,
+            news_report=news_report,
         )
         logger.emit(
             level="INFO",

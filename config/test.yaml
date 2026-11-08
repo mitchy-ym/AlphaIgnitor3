@@ -24,3 +24,4 @@ top_n: 10
 max_tickers: 5
 model_root: models_test
 report_outdir: report_test
+enable_news_sentiment: false
