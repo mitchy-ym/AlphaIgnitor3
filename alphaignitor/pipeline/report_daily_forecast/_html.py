@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import json
 import math
 from typing import Any
 
@@ -68,6 +69,27 @@ def _render_table(
                 tds.append(f'<td class="col-ticker"><span class="ticker-pill">{html.escape(s)}</span>{badge}</td>')
             elif key == "name":
                 tds.append(f'<td class="col-name">{html.escape(s)}</td>')
+            elif key == "signal":
+                sig_tooltip = ""
+                sig_json_str = row_dict.get("signals_json")
+                if sig_json_str:
+                    try:
+                        sig_data = json.loads(sig_json_str)
+                        items = sig_data.get("items", [])
+                        lines = []
+                        for item in items:
+                            cat = item.get("category", "")
+                            lbl = item.get("label", "")
+                            if cat and lbl:
+                                lines.append(f"[{cat}] {lbl}")
+                            elif lbl:
+                                lines.append(lbl)
+                        sig_tooltip = "\n".join(lines)
+                    except Exception:
+                        pass
+                title_attr = f' title="{html.escape(sig_tooltip)}"' if sig_tooltip else ''
+                cursor_style = ' style="cursor:help"' if sig_tooltip else ''
+                tds.append(f'<td class="col-signal"{title_attr}{cursor_style}>{html.escape(s)}</td>')
             elif label.startswith("Day "):
                 tds.append(f'<td class="day-horizon-col num-cell">{html.escape(s)}</td>')
             elif label == "Avg":

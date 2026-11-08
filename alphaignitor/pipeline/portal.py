@@ -101,6 +101,10 @@ def scan_reports(report_dir: Path) -> dict:
                     "macro_regime": macro_report.macro_regime,
                     "event_risk_level": macro_report.event_risk_level,
                     "event_risk_note": macro_report.event_risk_note,
+                    "sector_scores": {
+                        k: v.to_dict() if hasattr(v, "to_dict") else v
+                        for k, v in macro_report.sector_scores.items()
+                    },
                 }
     except Exception:
         latest_macro = None
@@ -170,11 +174,41 @@ def render_portal_html(data: dict) -> str:
         else:
             risk_meta = "Event Risk: LOW"
 
+        top_sectors_html = ""
+        sec_scores = latest_macro.get("sector_scores", {})
+        if sec_scores:
+            def _sec_val(val: Any) -> float:
+                if hasattr(val, "score"):
+                    return float(val.score)
+                if isinstance(val, dict):
+                    return float(val.get("score", 0.0))
+                try:
+                    return float(val)
+                except Exception:
+                    return 0.0
+
+            sorted_sec = sorted(
+                sec_scores.items(),
+                key=lambda x: -_sec_val(x[1]),
+            )
+            parts = []
+            if sorted_sec:
+                top_b = sorted_sec[0]
+                sc_b = _sec_val(top_b[1])
+                if sc_b > 0:
+                    parts.append(f"🟢 {top_b[0]} {sc_b:+.2f}")
+                top_r = sorted_sec[-1]
+                sc_r = _sec_val(top_r[1])
+                if sc_r < 0:
+                    parts.append(f"🔴 {top_r[0]} {sc_r:+.2f}")
+            if parts:
+                top_sectors_html = f'<div style="font-size: 11px; margin-top: 4px; color: var(--text-secondary);">' + " | ".join(parts) + '</div>'
+
         macro_card_html = f"""
         <div class="kpi-card">
           <div class="kpi-label">政治・経済マクロ地合い</div>
           <div class="kpi-value" style="color: {m_col}; font-size: 20px;">{m_badge}</div>
-          <div class="kpi-meta">{risk_meta}</div>
+          <div class="kpi-meta">{risk_meta}{top_sectors_html}</div>
         </div>
         """
 
