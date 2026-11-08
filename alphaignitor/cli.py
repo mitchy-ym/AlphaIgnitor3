@@ -201,19 +201,52 @@ def run_daily(
             price_panel = load_price_panel(root / "aggs/us_stock_day", dates=[date.fromisoformat(d) for d in available_dates[-60:]], tickers=resolved_tickers)
             series_by_ticker = ticker_series_map(price_panel)
 
+            # Load news report for action sheet if enabled
+            news_report = None
+            if getattr(cfg, "enable_news_sentiment", False):
+                try:
+                    from alphaignitor.pipeline.news.storage import NewsSentimentStorage
+                    news_db = root / "cache" / "news_sentiment.sqlite3"
+                    if news_db.exists():
+                        storage = NewsSentimentStorage(news_db)
+                        news_report = storage.load_macro_report(asof)
+                        if news_report is None:
+                            news_report = storage.load_latest_macro_report()
+                except Exception:
+                    news_report = None
+
             signals = evaluate_signals_for_asof(
                 conn=cache_conn,
                 asof_date=asof,
                 tickers=resolved_tickers,
                 series_by_ticker=series_by_ticker,
                 strategy_cfg=trading_cfg.strategy,
+                news_report=news_report,
+                adverse_news_threshold=getattr(cfg, "news_adverse_threshold", -0.45),
             )
             cache_conn.close()
+
+            # Load active positions if available
+            active_positions = None
+            pos_file = root / "cache/active_positions.json"
+            if pos_file.exists():
+                try:
+                    from alphaignitor.backtest import load_active_positions, update_positions_holding_and_prices
+                    current_prices = {
+                        t: float(df.iloc[-1]["close"])
+                        for t, df in series_by_ticker.items()
+                        if not df.empty
+                    }
+                    active_positions = update_positions_holding_and_prices(current_prices=current_prices, path=pos_file)
+                except Exception:
+                    pass
 
             action_sheet = generate_action_sheet(
                 asof_date=asof,
                 signals=signals,
                 trading_config=trading_cfg,
+                active_positions=active_positions,
+                news_report=news_report,
             )
             print("\n" + format_action_sheet_text(action_sheet) + "\n")
         except Exception as e:
