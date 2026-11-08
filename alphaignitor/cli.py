@@ -76,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="予測ステージをスキップする (predict/<date>_us_stock_ensemble_forecast.parquet が存在する場合)",
     )
     run.add_argument("--skip-report", action="store_true", help="HTML レポート生成をスキップする")
+    run.add_argument("--refresh-news", action="store_true", help="政治・経済ニュースを最新化してセンチメントを再解析する")
     run.add_argument("--optuna-trials", type=int, default=None, help="Optuna trial 数を上書きする")
     run.add_argument("--optuna-timeout-minutes", type=int, default=None, help="Optuna 1銘柄あたりの時間上限を上書きする")
 
@@ -134,6 +135,7 @@ def run_daily(
     skip_download: bool,
     skip_forecast: bool = False,
     skip_report: bool = False,
+    refresh_news: bool = False,
     optuna_trials: int | None = None,
     optuna_timeout_minutes: int | None = None,
     root: Path,
@@ -190,7 +192,7 @@ def run_daily(
         if skip_report:
             logger.emit(level="INFO", stage="report", event="skipped", msg="レポートをスキップ")
         else:
-            report_stage.run(cfg, logger=logger, root=root)
+            report_stage.run(cfg, logger=logger, root=root, refresh_news=refresh_news)
 
         # ── Stage 4: Generate & Print moomoo Action Sheet ────────
         try:
@@ -561,6 +563,7 @@ def main() -> int:
             skip_download=bool(args.skip_download),
             skip_forecast=bool(args.skip_forecast),
             skip_report=bool(args.skip_report),
+            refresh_news=bool(getattr(args, "refresh_news", False)),
             optuna_trials=args.optuna_trials,
             optuna_timeout_minutes=args.optuna_timeout_minutes,
             root=PROJECT_ROOT,

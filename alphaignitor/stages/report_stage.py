@@ -25,7 +25,13 @@ def _resolve_forecast_path(root: Path, cfg: PipelineConfig) -> Path:
     return files[-1]
 
 
-def run(cfg: PipelineConfig, *, logger: EventLogger, root: Path) -> Path:
+def run(
+    cfg: PipelineConfig,
+    *,
+    logger: EventLogger,
+    root: Path,
+    refresh_news: bool = False,
+) -> Path:
     forecast = _resolve_forecast_path(root, cfg)
     logger.emit(
         level="INFO",
@@ -54,7 +60,7 @@ def run(cfg: PipelineConfig, *, logger: EventLogger, root: Path) -> Path:
                 asof_date = dt.date.today().isoformat()
 
             storage = NewsSentimentStorage(root / "cache/news_sentiment.sqlite3")
-            cached_report = storage.load_macro_report(asof_date)
+            cached_report = storage.load_macro_report(asof_date) if not refresh_news else None
             if cached_report is not None:
                 news_report = cached_report
                 logger.emit(
