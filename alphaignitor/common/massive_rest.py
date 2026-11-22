@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from datetime import date, timedelta
@@ -18,6 +19,11 @@ from alphaignitor.common._credentials import get_api_key
 
 _DEFAULT_GROUPED_URL = "https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/{date}"
 _MISSING_RATE_THRESHOLD = 0.05
+
+
+def _mask_api_key(text: str) -> str:
+    """URL クエリパラメータに含まれる API キーをマスクする。"""
+    return re.sub(r"([?&](?:apiKey|key)=)[^&\s'\"]+", r"\1***", str(text))
 
 
 class DayDataQualityError(RuntimeError):
@@ -69,78 +75,81 @@ def fetch_grouped_daily_aggs_rest(
     backoff = 1.0
     last_err: Exception | None = None
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = session.get(url, params=params, timeout=timeout_sec)
-        except Exception as e:
-            last_err = e
-            if attempt < max_retries:
-                time.sleep(backoff)
-                backoff = min(backoff * 2.0, 10.0)
-                continue
-            raise
+    try:
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = session.get(url, params=params, timeout=timeout_sec)
+            except Exception as e:
+                last_err = e
+                if attempt < max_retries:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2.0, 10.0)
+                    continue
+                raise
 
-        if resp.status_code == 200:
-            data = resp.json()
-            results = data.get("results") or []
-            rows: list[dict] = []
-            total_records = len(results) if isinstance(results, list) else 0
-            if isinstance(results, list):
-                for r in results:
-                    if not isinstance(r, dict):
-                        continue
-                    ticker = _extract_ticker(r)
-                    if not ticker:
-                        continue
-                    o = _extract_num(r, "o", "open")
-                    h = _extract_num(r, "h", "high")
-                    l = _extract_num(r, "l", "low")
-                    c = _extract_num(r, "c", "close")
-                    v = _extract_num(r, "v", "volume")
-                    if None in (o, h, l, c, v):
-                        continue
-                    n = _extract_num(r, "n", "transactions")
-                    vw = _extract_num(r, "vw", "vwap")
-                    rows.append(
-                        {
-                            "trade_date": trade_date.isoformat(),
-                            "ticker": ticker,
-                            "open": o,
-                            "high": h,
-                            "low": l,
-                            "close": c,
-                            "volume": int(v),
-                            "transactions": int(n) if n is not None else 0,
-                            "vwap": vw,
-                        }
-                    )
+            if resp.status_code == 200:
+                data = resp.json()
+                results = data.get("results") or []
+                rows: list[dict] = []
+                total_records = len(results) if isinstance(results, list) else 0
+                if isinstance(results, list):
+                    for r in results:
+                        if not isinstance(r, dict):
+                            continue
+                        ticker = _extract_ticker(r)
+                        if not ticker:
+                            continue
+                        o = _extract_num(r, "o", "open")
+                        h = _extract_num(r, "h", "high")
+                        l = _extract_num(r, "l", "low")
+                        c = _extract_num(r, "c", "close")
+                        v = _extract_num(r, "v", "volume")
+                        if None in (o, h, l, c, v):
+                            continue
+                        n = _extract_num(r, "n", "transactions")
+                        vw = _extract_num(r, "vw", "vwap")
+                        rows.append(
+                            {
+                                "trade_date": trade_date.isoformat(),
+                                "ticker": ticker,
+                                "open": o,
+                                "high": h,
+                                "low": l,
+                                "close": c,
+                                "volume": int(v),
+                                "transactions": int(n) if n is not None else 0,
+                                "vwap": vw,
+                            }
+                        )
 
-            if total_records > 0:
-                missing_rate = 1.0 - (len(rows) / float(total_records))
-                if missing_rate > _MISSING_RATE_THRESHOLD:
-                    raise DayDataQualityError(
-                        f"grouped day data quality check failed: trade_date={trade_date.isoformat()} "
-                        f"valid={len(rows)} total={total_records} missing_rate={missing_rate:.4f} "
-                        f"threshold={_MISSING_RATE_THRESHOLD:.4f}"
-                    )
+                if total_records > 0:
+                    missing_rate = 1.0 - (len(rows) / float(total_records))
+                    if missing_rate > _MISSING_RATE_THRESHOLD:
+                        raise DayDataQualityError(
+                            f"grouped day data quality check failed: trade_date={trade_date.isoformat()} "
+                            f"valid={len(rows)} total={total_records} missing_rate={missing_rate:.4f} "
+                            f"threshold={_MISSING_RATE_THRESHOLD:.4f}"
+                        )
 
-            return pd.DataFrame(rows)
+                return pd.DataFrame(rows)
 
-        if resp.status_code in (429, 500, 502, 503, 504):
-            if attempt < max_retries:
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after is not None:
-                    try:
-                        sleep_sec = float(retry_after)
-                    except Exception:
+            if resp.status_code in (429, 500, 502, 503, 504):
+                if attempt < max_retries:
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after is not None:
+                        try:
+                            sleep_sec = float(retry_after)
+                        except Exception:
+                            sleep_sec = backoff
+                    else:
                         sleep_sec = backoff
-                else:
-                    sleep_sec = backoff
-                time.sleep(max(0.1, sleep_sec))
-                backoff = min(backoff * 2.0, 10.0)
-                continue
+                    time.sleep(max(0.1, sleep_sec))
+                    backoff = min(backoff * 2.0, 10.0)
+                    continue
 
-        resp.raise_for_status()
+            resp.raise_for_status()
+    finally:
+        session.close()
 
     if last_err:
         raise last_err
@@ -262,7 +271,7 @@ def download_daily_parquet(
             except Exception as e:
                 error_count += 1
                 d = future_to_date[fut]
-                print(f"\n[ERROR] {d.isoformat()}: {e}", flush=True)
+                print(f"\n[ERROR] {d.isoformat()}: {_mask_api_key(str(e))}", flush=True)
             else:
                 if result == _R_SKIPPED:
                     skip_count += 1

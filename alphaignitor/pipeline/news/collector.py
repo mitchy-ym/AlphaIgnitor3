@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import email.utils
 import html
+import logging
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -13,6 +14,12 @@ import requests
 
 from .schema import NewsArticle
 
+logger = logging.getLogger(__name__)
+
+
+def _mask_api_key(text: str) -> str:
+    return re.sub(r"([?&](?:apiKey|key)=)[^&\s'\"]+", r"\1***", str(text))
+
 # Public financial RSS feeds (Zero-cost, authoritative, reliable)
 DEFAULT_RSS_FEEDS = [
     {
@@ -22,12 +29,12 @@ DEFAULT_RSS_FEEDS = [
     },
     {
         "name": "CNBC Economy",
-        "url": "https://search.cnbc.com/rs/search/combinedList/view.xml?partnerId=wrss01&id=20910258",
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
         "category": "macro_economy",
     },
     {
         "name": "CNBC Finance",
-        "url": "https://search.cnbc.com/rs/search/combinedList/view.xml?partnerId=wrss01&id=10000664",
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
         "category": "markets",
     },
     {
@@ -72,13 +79,18 @@ def fetch_rss_feed(
     timeout_sec: float = 8.0,
 ) -> list[NewsArticle]:
     articles: list[NewsArticle] = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AlphaIgnitor/3.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    }
     try:
         resp = requests.get(url, headers=headers, timeout=timeout_sec)
-        if resp.status_code != 200:
+        if resp.status_code != 200 or not resp.content:
+            logger.warning("RSS feed returned non-200 or empty body (%s): status=%s", source_name, resp.status_code)
             return []
         root = ET.fromstring(resp.content)
-    except Exception:
+    except Exception as e:
+        logger.warning("RSS feed fetch failed (%s): %s", source_name, _mask_api_key(str(e)))
         return []
 
     # Parse channel -> item
@@ -147,7 +159,8 @@ def fetch_polygon_market_news(
                 return []
         data = resp.json()
         results = data.get("results") or []
-    except Exception:
+    except Exception as e:
+        logger.warning("Polygon market news fetch failed: %s", _mask_api_key(str(e)))
         return []
 
     articles: list[NewsArticle] = []
@@ -209,7 +222,8 @@ def fetch_polygon_ticker_news(
                 return []
         data = resp.json()
         results = data.get("results") or []
-    except Exception:
+    except Exception as e:
+        logger.warning("Polygon market news fetch failed: %s", _mask_api_key(str(e)))
         return []
 
     articles: list[NewsArticle] = []
@@ -309,8 +323,8 @@ def collect_all_news(
                 if isinstance(res, list):
                     for a in res:
                         _add_article(a)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("News collection worker failed: %s", _mask_api_key(str(e)))
 
     all_articles.sort(key=lambda a: a.published_at, reverse=True)
     return all_articles

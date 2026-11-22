@@ -42,7 +42,7 @@ class MacroNewsReport:
     ticker_impacts: dict[str, TickerNewsImpact] = field(default_factory=dict)
     articles_analyzed_count: int = 0
     provider: str = "gemini"
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.8-flash"
     generated_at: str = ""
 
     def get_composite_ticker_score(

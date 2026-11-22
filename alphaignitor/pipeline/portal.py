@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import html
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 
 def format_size(num_bytes: int) -> str:
@@ -153,9 +155,10 @@ def render_portal_html(data: dict) -> str:
     macro_card_html = ""
     if latest_macro:
         m_score = float(latest_macro.get("macro_score", 0.0))
-        m_regime = str(latest_macro.get("macro_regime", "Neutral"))
+        m_regime = html.escape(str(latest_macro.get("macro_regime", "Neutral")))
         m_risk = str(latest_macro.get("event_risk_level", "LOW"))
-        m_note = latest_macro.get("event_risk_note")
+        m_note_raw = latest_macro.get("event_risk_note")
+        m_note = html.escape(str(m_note_raw)) if m_note_raw else None
 
         if m_score >= 0.20:
             m_col = "#10b981"
@@ -196,11 +199,11 @@ def render_portal_html(data: dict) -> str:
                 top_b = sorted_sec[0]
                 sc_b = _sec_val(top_b[1])
                 if sc_b > 0:
-                    parts.append(f"🟢 {top_b[0]} {sc_b:+.2f}")
+                    parts.append(f"🟢 {html.escape(str(top_b[0]))} {sc_b:+.2f}")
                 top_r = sorted_sec[-1]
                 sc_r = _sec_val(top_r[1])
                 if sc_r < 0:
-                    parts.append(f"🔴 {top_r[0]} {sc_r:+.2f}")
+                    parts.append(f"🔴 {html.escape(str(top_r[0]))} {sc_r:+.2f}")
             if parts:
                 top_sectors_html = f'<div style="font-size: 11px; margin-top: 4px; color: var(--text-secondary);">' + " | ".join(parts) + '</div>'
 

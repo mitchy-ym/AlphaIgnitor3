@@ -543,3 +543,76 @@ class TestNewsStrategyAndReportIntegration:
         assert "政治・経済マクロ地合い" in portal_html
         assert "Moderately Bullish (+0.35)" in portal_html
         assert "米CPI発表直前" in portal_html
+
+
+def test_portal_macro_card_html_escaping():
+    """Verify macro_regime, event_risk_note, and sector names are HTML-escaped in portal."""
+    from alphaignitor.pipeline.portal import render_portal_html
+    from alphaignitor.pipeline.news.schema import SectorSentiment
+
+    data = {
+        "daily_reports": [],
+        "backtest_info": None,
+        "latest_daily": None,
+        "latest_macro": {
+            "asof_date": "2026-11-22",
+            "macro_score": -0.5,
+            "macro_regime": "Bear<script>alert(1)</script>",
+            "event_risk_level": "HIGH",
+            "event_risk_note": "Risk & <Alert>",
+            "sector_scores": {
+                "Tech<Img>": SectorSentiment(score=0.5, reason_ja="ok"),
+                "Energy&Gas": SectorSentiment(score=-0.5, reason_ja="bad"),
+            },
+        },
+        "total_days": 0,
+        "generated_at": "2026-11-22 12:00:00",
+        "tz_name": "SGT",
+    }
+    html_out = render_portal_html(data)
+    assert "<script>alert(1)</script>" not in html_out
+    assert "Bear&lt;script&gt;alert(1)&lt;/script&gt;" in html_out
+    assert "Risk &amp; &lt;Alert&gt;" in html_out
+    assert "Tech&lt;Img&gt;" in html_out
+    assert "Energy&amp;Gas" in html_out
+
+
+def test_gemini_uses_header_not_query_param(monkeypatch):
+    """Verify analyze_news_with_gemini sends API key in x-goog-api-key header, not URL."""
+    from alphaignitor.pipeline.news.analyzer import analyze_news_with_gemini
+    from alphaignitor.pipeline.news.schema import NewsArticle
+
+    captured = {}
+
+    class DummyResp:
+        status_code = 200
+        def json(self):
+            return {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": '{"macro_score": 0.1, "macro_regime": "Neutral", "event_risk_level": "LOW"}'
+                        }]
+                    }
+                }]
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return DummyResp()
+
+    monkeypatch.setattr("alphaignitor.pipeline.news.analyzer.requests.post", fake_post)
+    articles = [NewsArticle(title="Fed steady", url="https://example.com", published_at="2026-11-22T00:00:00Z", source="FRB")]
+    report = analyze_news_with_gemini(articles=articles, asof_date="2026-11-22", api_key="SECRET_TEST_KEY")
+
+    assert "SECRET_TEST_KEY" not in captured["url"]
+    assert captured["headers"].get("x-goog-api-key") == "SECRET_TEST_KEY"
+    assert report.macro_regime == "Neutral"
+
+
+def test_mask_api_key():
+    from alphaignitor.common.massive_rest import _mask_api_key
+    masked = _mask_api_key("403 Forbidden for url: https://api.massive.com/v2/test?adjusted=true&apiKey=MY_SECRET_123")
+    assert "MY_SECRET_123" not in masked
+    assert "apiKey=***" in masked

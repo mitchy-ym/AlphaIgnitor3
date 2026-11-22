@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 import requests
 
 from .schema import MacroNewsReport, NewsArticle, SectorSentiment, TickerNewsImpact
+
+logger = logging.getLogger(__name__)
 
 GICS_SECTORS = [
     "Information Technology",
@@ -124,11 +127,15 @@ def analyze_news_with_gemini(
         "generationConfig": generation_config,
     }
 
+    headers = {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json",
+    }
     last_error: Exception | None = None
     for cur_model in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{cur_model}:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{cur_model}:generateContent"
         try:
-            resp = requests.post(url, json=payload, timeout=timeout_sec)
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
             if resp.status_code == 200:
                 resp_json = resp.json()
                 candidates = resp_json.get("candidates") or []
@@ -353,7 +360,7 @@ def analyze_news_report(
                 model="gpt-4o-mini",
             )
     except Exception as e:
-        # Log and safely fall back
+        logger.warning("LLM news analysis failed; falling back to keyword analysis: %s", e)
         print(f"[news_analyzer] Warning: LLM analysis failed ({e}). Using quant fallback.")
 
     return generate_fallback_macro_report(asof_date=asof_date)

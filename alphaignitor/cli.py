@@ -247,57 +247,59 @@ def run_optimize_strategy_cli(
     root: Path,
 ) -> int:
     trading_cfg = load_trading_config(root / trading_config_path)
-    cache_conn = sqlite3.connect(root / prediction_cache_path)
-    resolved_tickers = resolve_tickers(root=root, tickers_csv=root / tickers_csv)
-    all_dates_dt = available_trade_dates(root / day_aggs_dir)
-    all_dates = [d.isoformat() for d in all_dates_dt]
+    cache_conn = sqlite3.connect(root / prediction_cache_path, timeout=30.0)
+    try:
+        resolved_tickers = resolve_tickers(root=root, tickers_csv=root / tickers_csv)
+        all_dates_dt = available_trade_dates(root / day_aggs_dir)
+        all_dates = [d.isoformat() for d in all_dates_dt]
 
-    total_days_needed = int(months * 21)
-    needed_dates_dt = all_dates_dt[-(total_days_needed + 10):] if len(all_dates_dt) > (total_days_needed + 10) else all_dates_dt
+        total_days_needed = int(months * 21)
+        needed_dates_dt = all_dates_dt[-(total_days_needed + 10):] if len(all_dates_dt) > (total_days_needed + 10) else all_dates_dt
 
-    print(f"[backtest] Loading price history for {len(resolved_tickers)} tickers ({len(needed_dates_dt)} dates)...")
-    price_panel = load_price_panel(root / day_aggs_dir, dates=needed_dates_dt, tickers=resolved_tickers)
-    series_by_ticker = ticker_series_map(price_panel)
-    print(f"[backtest] Loaded {len(price_panel):,} price rows.")
+        print(f"[backtest] Loading price history for {len(resolved_tickers)} tickers ({len(needed_dates_dt)} dates)...")
+        price_panel = load_price_panel(root / day_aggs_dir, dates=needed_dates_dt, tickers=resolved_tickers)
+        series_by_ticker = ticker_series_map(price_panel)
+        print(f"[backtest] Loaded {len(price_panel):,} price rows.")
 
-    best_cfg, top_strategies, res_is, res_oos = run_walk_forward_optimization(
-        conn=cache_conn,
-        series_by_ticker=series_by_ticker,
-        tickers=resolved_tickers,
-        all_trade_dates=all_dates,
-        months=months,
-        n_trials=trials,
-        timeout_seconds=timeout_seconds,
-        base_config=trading_cfg,
-        apply_best_to_config=apply_best,
-        config_save_path=root / trading_config_path,
-    )
-
-    # Run full period backtest with best config
-    engine = BacktestEngine(best_cfg, series_by_ticker)
-    total_days_needed = int(months * 21)
-    eval_dates = all_dates[-total_days_needed:] if len(all_dates) > total_days_needed else all_dates[:]
-
-    best_signals = {
-        d: evaluate_signals_for_asof(
+        best_cfg, top_strategies, res_is, res_oos = run_walk_forward_optimization(
             conn=cache_conn,
-            asof_date=d,
-            tickers=resolved_tickers,
             series_by_ticker=series_by_ticker,
-            strategy_cfg=best_cfg.strategy,
+            tickers=resolved_tickers,
+            all_trade_dates=all_dates,
+            months=months,
+            n_trials=trials,
+            timeout_seconds=timeout_seconds,
+            base_config=trading_cfg,
+            apply_best_to_config=apply_best,
+            config_save_path=root / trading_config_path,
         )
-        for d in eval_dates
-    }
-    full_result = engine.run(trade_dates=eval_dates, signals_by_date=best_signals)
 
-    # Generate Action sheet for latest asof
-    latest_asof = eval_dates[-1]
-    action_sheet = generate_action_sheet(
-        asof_date=latest_asof,
-        signals=best_signals.get(latest_asof, []),
-        trading_config=best_cfg,
-    )
-    cache_conn.close()
+        # Run full period backtest with best config
+        engine = BacktestEngine(best_cfg, series_by_ticker)
+        total_days_needed = int(months * 21)
+        eval_dates = all_dates[-total_days_needed:] if len(all_dates) > total_days_needed else all_dates[:]
+
+        best_signals = {
+            d: evaluate_signals_for_asof(
+                conn=cache_conn,
+                asof_date=d,
+                tickers=resolved_tickers,
+                series_by_ticker=series_by_ticker,
+                strategy_cfg=best_cfg.strategy,
+            )
+            for d in eval_dates
+        }
+        full_result = engine.run(trade_dates=eval_dates, signals_by_date=best_signals)
+
+        # Generate Action sheet for latest asof
+        latest_asof = eval_dates[-1]
+        action_sheet = generate_action_sheet(
+            asof_date=latest_asof,
+            signals=best_signals.get(latest_asof, []),
+            trading_config=best_cfg,
+        )
+    finally:
+        cache_conn.close()
 
     # Generate HTML report
     html_path = generate_backtest_html_report(
@@ -334,20 +336,23 @@ def run_backtest_cli(
     root: Path,
 ) -> int:
     trading_cfg = load_trading_config(root / trading_config_path)
-    cache_conn = sqlite3.connect(root / prediction_cache_path)
-    resolved_tickers = resolve_tickers(root=root, tickers_csv=root / tickers_csv)
-    all_dates_dt = available_trade_dates(root / day_aggs_dir)
-    all_dates = [d.isoformat() for d in all_dates_dt]
-    total_days_needed = int(months * 21)
-    eval_dates = all_dates[-total_days_needed:] if len(all_dates) > total_days_needed else all_dates[:]
-    needed_dates_dt = all_dates_dt[-(total_days_needed + 10):] if len(all_dates_dt) > (total_days_needed + 10) else all_dates_dt
+    cache_conn = sqlite3.connect(root / prediction_cache_path, timeout=30.0)
+    try:
+        resolved_tickers = resolve_tickers(root=root, tickers_csv=root / tickers_csv)
+        all_dates_dt = available_trade_dates(root / day_aggs_dir)
+        all_dates = [d.isoformat() for d in all_dates_dt]
+        total_days_needed = int(months * 21)
+        eval_dates = all_dates[-total_days_needed:] if len(all_dates) > total_days_needed else all_dates[:]
+        needed_dates_dt = all_dates_dt[-(total_days_needed + 10):] if len(all_dates_dt) > (total_days_needed + 10) else all_dates_dt
 
-    print(f"[backtest] Running {months}-month backtest on {len(eval_dates)} trading dates [{eval_dates[0]} ~ {eval_dates[-1]}]...")
-    price_panel = load_price_panel(root / day_aggs_dir, dates=needed_dates_dt, tickers=resolved_tickers)
-    series_by_ticker = ticker_series_map(price_panel)
+        print(f"[backtest] Running {months}-month backtest on {len(eval_dates)} trading dates [{eval_dates[0]} ~ {eval_dates[-1]}]...")
+        price_panel = load_price_panel(root / day_aggs_dir, dates=needed_dates_dt, tickers=resolved_tickers)
+        series_by_ticker = ticker_series_map(price_panel)
 
-    weights_map = {t: load_best_weights(cache_conn, ticker=t, models=ENSEMBLE_MODELS) for t in resolved_tickers}
-    details_map_by_date = {d: load_all_prediction_details_for_asof(cache_conn, asof_trade_date=d) for d in eval_dates}
+        weights_map = {t: load_best_weights(cache_conn, ticker=t, models=ENSEMBLE_MODELS) for t in resolved_tickers}
+        details_map_by_date = {d: load_all_prediction_details_for_asof(cache_conn, asof_trade_date=d) for d in eval_dates}
+    finally:
+        cache_conn.close()
     close_map = {
         (t, str(row.trade_date)): float(row.close)
         for t, df in series_by_ticker.items()
@@ -377,7 +382,6 @@ def run_backtest_cli(
         signals=signals_by_date.get(latest_asof, []),
         trading_config=trading_cfg,
     )
-    cache_conn.close()
 
     html_path = generate_backtest_html_report(
         result=result,
@@ -449,57 +453,59 @@ def run_action_sheet_cli(
         return 0
 
     trading_cfg = load_trading_config(root / trading_config_path)
-    cache_conn = sqlite3.connect(root / prediction_cache_path)
-    resolved_tickers = resolve_tickers(root=root, tickers_csv=root / tickers_csv)
-    target_asof = asof_date or latest_asof_date(root / day_aggs_dir, run_date=None).isoformat()
-    all_dates_dt = available_trade_dates(root / day_aggs_dir)
+    cache_conn = sqlite3.connect(root / prediction_cache_path, timeout=30.0)
+    try:
+        resolved_tickers = resolve_tickers(root=root, tickers_csv=root / tickers_csv)
+        target_asof = asof_date or latest_asof_date(root / day_aggs_dir, run_date=None).isoformat()
+        all_dates_dt = available_trade_dates(root / day_aggs_dir)
 
-    # News Sentiment load or on-demand fetch
-    news_report = None
-    if not no_news:
-        try:
-            from alphaignitor.pipeline.news import (
-                NewsSentimentStorage,
-                analyze_news_report,
-                collect_all_news,
-            )
-            storage = NewsSentimentStorage(root / "cache/news_sentiment.sqlite3")
-            if refresh_news:
-                articles = collect_all_news(cache_dir=root / "cache")
-                news_report = analyze_news_report(articles=articles, asof_date=target_asof)
-                storage.save_macro_report(news_report)
-            else:
-                news_report = storage.load_macro_report(target_asof)
-                if news_report is None:
+        # News Sentiment load or on-demand fetch
+        news_report = None
+        if not no_news:
+            try:
+                from alphaignitor.pipeline.news import (
+                    NewsSentimentStorage,
+                    analyze_news_report,
+                    collect_all_news,
+                )
+                storage = NewsSentimentStorage(root / "cache/news_sentiment.sqlite3")
+                if refresh_news:
                     articles = collect_all_news(cache_dir=root / "cache")
                     news_report = analyze_news_report(articles=articles, asof_date=target_asof)
                     storage.save_macro_report(news_report)
-        except Exception as ne:
-            print(f"⚠️ [News Warning] ニュースセンチメント取得スキップ: {ne}")
+                else:
+                    news_report = storage.load_macro_report(target_asof)
+                    if news_report is None:
+                        articles = collect_all_news(cache_dir=root / "cache")
+                        news_report = analyze_news_report(articles=articles, asof_date=target_asof)
+                        storage.save_macro_report(news_report)
+            except Exception as ne:
+                print(f"⚠️ [News Warning] ニュースセンチメント取得スキップ: {ne}")
 
-    price_panel = load_price_panel(root / day_aggs_dir, dates=all_dates_dt[-60:], tickers=resolved_tickers)
-    series_by_ticker = ticker_series_map(price_panel)
+        price_panel = load_price_panel(root / day_aggs_dir, dates=all_dates_dt[-60:], tickers=resolved_tickers)
+        series_by_ticker = ticker_series_map(price_panel)
 
-    # Update active positions holding days & current prices
-    current_prices = {
-        ticker: float(df.iloc[-1]["close"])
-        for ticker, df in series_by_ticker.items()
-        if not df.empty
-    }
-    active_positions = update_positions_holding_and_prices(
-        current_prices=current_prices,
-        path=root / "cache/active_positions.json",
-    )
+        # Update active positions holding days & current prices
+        current_prices = {
+            ticker: float(df.iloc[-1]["close"])
+            for ticker, df in series_by_ticker.items()
+            if not df.empty
+        }
+        active_positions = update_positions_holding_and_prices(
+            current_prices=current_prices,
+            path=root / "cache/active_positions.json",
+        )
 
-    signals = evaluate_signals_for_asof(
-        conn=cache_conn,
-        asof_date=target_asof,
-        tickers=resolved_tickers,
-        series_by_ticker=series_by_ticker,
-        strategy_cfg=trading_cfg.strategy,
-        news_report=news_report,
-    )
-    cache_conn.close()
+        signals = evaluate_signals_for_asof(
+            conn=cache_conn,
+            asof_date=target_asof,
+            tickers=resolved_tickers,
+            series_by_ticker=series_by_ticker,
+            strategy_cfg=trading_cfg.strategy,
+            news_report=news_report,
+        )
+    finally:
+        cache_conn.close()
 
     sheet = generate_action_sheet(
         asof_date=target_asof,
