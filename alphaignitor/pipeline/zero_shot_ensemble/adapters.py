@@ -241,6 +241,14 @@ class TirexAdapter(ZeroShotAdapter):
         resolved_device = _resolve_gpu_device(backend)
         self._model = load_model(model_id, device=resolved_device)
 
+        # On ROCm (HIP), tirex2's default 'triton' sLSTM kernel can emit WMMA bf16 compile errors;
+        # switch sLSTM blocks cleanly to PyTorch native kernel.
+        if resolved_device == "cuda" and getattr(torch.version, "hip", None) is not None:
+            for mod in (self._model.modules() if hasattr(self._model, "modules") else ()):
+                cfg = getattr(mod, "config", None)
+                if cfg is not None and getattr(cfg, "backend", None) == "triton":
+                    cfg.backend = "torch"
+
     def forecast(self, close_context: np.ndarray, *, horizon: int) -> list[float]:
         return self.forecast_result(close_context, horizon=horizon).point
 

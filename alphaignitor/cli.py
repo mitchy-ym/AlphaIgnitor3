@@ -189,68 +189,43 @@ def run_daily(
             forecast_stage.run(cfg, logger=logger, root=root)
 
         # ── Stage 3: Report ──────────────────────────────────────
+        action_sheet = None
         if skip_report:
             logger.emit(level="INFO", stage="report", event="skipped", msg="レポートをスキップ")
         else:
-            report_stage.run(cfg, logger=logger, root=root, refresh_news=refresh_news)
+            _, action_sheet = report_stage.run_with_action_sheet(
+                cfg,
+                logger=logger,
+                root=root,
+                refresh_news=refresh_news,
+                trading_config_path=trading_config_path,
+            )
 
         # ── Stage 4: Generate & Print moomoo Action Sheet ────────
         try:
-            cache_conn = sqlite3.connect(root / cfg.prediction_cache_path)
-            asof = latest_asof_date(root / "aggs/us_stock_day", run_date=cfg.run_date).isoformat()
-            resolved_tickers = resolve_tickers(root=root, tickers_csv=root / "us_stock_list.csv")
-            available_dates = [d.isoformat() for d in available_trade_dates(root / "aggs/us_stock_day")]
-            price_panel = load_price_panel(root / "aggs/us_stock_day", dates=[date.fromisoformat(d) for d in available_dates[-60:]], tickers=resolved_tickers)
-            series_by_ticker = ticker_series_map(price_panel)
+            if action_sheet is None:
+                news_report = None
+                if getattr(cfg, "enable_news_sentiment", False):
+                    try:
+                        from alphaignitor.pipeline.news.storage import NewsSentimentStorage
+                        news_db = root / "cache" / "news_sentiment.sqlite3"
+                        if news_db.exists():
+                            asof = latest_asof_date(root / "aggs/us_stock_day", run_date=cfg.run_date).isoformat()
+                            storage = NewsSentimentStorage(news_db)
+                            news_report = storage.load_macro_report(asof) or storage.load_latest_macro_report()
+                    except Exception:
+                        news_report = None
 
-            # Load news report for action sheet if enabled
-            news_report = None
-            if getattr(cfg, "enable_news_sentiment", False):
-                try:
-                    from alphaignitor.pipeline.news.storage import NewsSentimentStorage
-                    news_db = root / "cache" / "news_sentiment.sqlite3"
-                    if news_db.exists():
-                        storage = NewsSentimentStorage(news_db)
-                        news_report = storage.load_macro_report(asof)
-                        if news_report is None:
-                            news_report = storage.load_latest_macro_report()
-                except Exception:
-                    news_report = None
+                action_sheet = report_stage.build_daily_action_sheet(
+                    cfg=cfg,
+                    trading_config_path=trading_config_path,
+                    root=root,
+                    news_report=news_report,
+                    logger=logger,
+                )
 
-            signals = evaluate_signals_for_asof(
-                conn=cache_conn,
-                asof_date=asof,
-                tickers=resolved_tickers,
-                series_by_ticker=series_by_ticker,
-                strategy_cfg=trading_cfg.strategy,
-                news_report=news_report,
-                adverse_news_threshold=getattr(cfg, "news_adverse_threshold", -0.45),
-            )
-            cache_conn.close()
-
-            # Load active positions if available
-            active_positions = None
-            pos_file = root / "cache/active_positions.json"
-            if pos_file.exists():
-                try:
-                    from alphaignitor.backtest import load_active_positions, update_positions_holding_and_prices
-                    current_prices = {
-                        t: float(df.iloc[-1]["close"])
-                        for t, df in series_by_ticker.items()
-                        if not df.empty
-                    }
-                    active_positions = update_positions_holding_and_prices(current_prices=current_prices, path=pos_file)
-                except Exception:
-                    pass
-
-            action_sheet = generate_action_sheet(
-                asof_date=asof,
-                signals=signals,
-                trading_config=trading_cfg,
-                active_positions=active_positions,
-                news_report=news_report,
-            )
-            print("\n" + format_action_sheet_text(action_sheet) + "\n")
+            if action_sheet is not None:
+                print("\n" + format_action_sheet_text(action_sheet) + "\n")
         except Exception as e:
             logger.emit(level="WARN", stage="action_sheet", event="error", msg=f"Action sheet generation failed: {e}")
 
