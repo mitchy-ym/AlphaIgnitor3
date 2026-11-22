@@ -229,10 +229,14 @@ class TirexAdapter(ZeroShotAdapter):
         self._batch_size = max(int(batch_size), 1)
         self._pad_context = bool(pad_context)
 
-        import tirex2.model.component.flashrnn_slstm as flashrnn_slstm
         from tirex2 import TimeseriesType, load_model
 
-        _patch_tirex2_rocm_flashrnn(flashrnn_slstm)
+        try:
+            import tirex2.model.component.flashrnn_slstm as flashrnn_slstm
+
+            _patch_tirex2_rocm_flashrnn(flashrnn_slstm)
+        except ImportError:
+            pass
         self._TimeseriesType = TimeseriesType
         resolved_device = _resolve_gpu_device(backend)
         self._model = load_model(model_id, device=resolved_device)
