@@ -27,6 +27,7 @@ def generate_action_sheet(
     trading_config: TradingConfig,
     active_positions: list[dict[str, Any]] | None = None,
     series_by_ticker: dict[str, pd.DataFrame] | None = None,
+    news_report: Any | None = None,
 ) -> dict[str, Any]:
     """Generate precise, human-executable moomoo trading instructions for tonight's SGT 20:00-21:30 session."""
     from alphaignitor.backtest.portfolio_tracker import load_active_positions
@@ -53,7 +54,24 @@ def generate_action_sheet(
         shares = int(pos.get("shares", 0))
         pnl_pct = ((current_price / entry_price) - 1.0) * 100 if entry_price > 0 else 0.0
 
-        if holding_days >= holding_days_limit:
+        # Check if holding ticker has acute severe adverse news
+        has_adverse_news = False
+        adverse_reason = ""
+        if news_report is not None:
+            t_impact = news_report.ticker_impacts.get(ticker)
+            if t_impact is not None and (t_impact.is_adverse_alert or t_impact.score <= -0.70):
+                has_adverse_news = True
+                adverse_reason = f"🚨 悪材料ニュース検知 (早期撤退推奨: {t_impact.summary_ja or '重度悪化'})"
+
+        if has_adverse_news:
+            exits.append({
+                "ticker": ticker,
+                "shares": shares,
+                "reason": adverse_reason,
+                "action": "寄付成行 (MOO) 全株売却",
+                "estimated_price": _round_price(current_price),
+            })
+        elif holding_days >= holding_days_limit:
             exits.append({
                 "ticker": ticker,
                 "shares": shares,
@@ -148,6 +166,8 @@ def generate_action_sheet(
             "take_profit_pct": tp_pct,
             "stop_loss_price": _round_price(sl_price),
             "stop_loss_pct": sl_pct,
+            "news_score": getattr(sig, "news_score", None),
+            "news_summary": getattr(sig, "news_summary", ""),
             "is_reserve": is_reserve,
         }
 
@@ -177,6 +197,16 @@ def generate_action_sheet(
         "reserves": reserves,
         "exits": exits,
         "holds": holds,
+        "news_report": news_report.to_dict() if news_report is not None else None,
+        "macro_warning": (
+            news_report.event_risk_note
+            if news_report and news_report.event_risk_level == "HIGH"
+            else (
+                f"マクロ地合い悪化警戒 ({news_report.macro_regime}: {news_report.macro_score:+.2f})"
+                if news_report and news_report.macro_score <= -0.50
+                else None
+            )
+        ),
     }
     return sheet
 
@@ -188,6 +218,15 @@ def format_action_sheet_text(sheet: dict[str, Any]) -> str:
         f"   運用資金: ${sheet['initial_capital_usd']:,.2f} USD | 最大保有枠: {sheet['max_slots']} 銘柄 | 空き枠: {sheet['available_slots']} 銘柄",
         "================================================================================",
     ]
+
+    if sheet.get("macro_warning"):
+        lines.append(f"⚠️ 【マクロ警戒アラート】: {sheet['macro_warning']}")
+
+    nr = sheet.get("news_report")
+    if nr and nr.get("key_drivers_ja"):
+        lines.append("🌐 【政治・経済マクロ概況】:")
+        for d in nr["key_drivers_ja"][:3]:
+            lines.append(f"   ・{d}")
 
     if sheet["buys"]:
         lines.append("\n【1. 新規買い発注 (本命)】（米国市場オープン前: 指値 + OCO設定 ※時間外OFF）")

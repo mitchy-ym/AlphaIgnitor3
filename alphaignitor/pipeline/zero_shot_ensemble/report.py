@@ -14,6 +14,7 @@ import pandas as pd
 from alphaignitor.pipeline.report_daily_forecast._chart import _svg_line_chart
 from alphaignitor.pipeline.report_daily_forecast._data_loader import _load_ticker_meta, read_day_aggs_by_date
 from alphaignitor.pipeline.report_daily_forecast._html import render_html
+from alphaignitor.pipeline.news.integration import evaluate_news_hybrid_verdict
 
 from .market_data import available_trade_dates, load_price_panel, ticker_series_map
 from .metrics import fmt_float, fmt_pct, metric_summary
@@ -37,6 +38,7 @@ def run_report(
     ticker_meta_csv: Path | None = None,
     action_sheet: dict[str, Any] | None = None,
     backtest_kpi: dict[str, Any] | None = None,
+    news_report: Any | None = None,
 ) -> Path:
     f_path = Path(forecast_path) if forecast_path else _latest_forecast_path(Path("predict"))
     df = pd.read_parquet(f_path)
@@ -45,7 +47,13 @@ def run_report(
 
     asof = asof_date or str(df["asof_trade_date"].iloc[0])
     meta_csv = Path(ticker_meta_csv) if ticker_meta_csv else Path("us_stock_list.csv")
-    table = build_report_table(df, ticker_meta_csv=meta_csv, max_horizon=max_horizon, action_sheet=action_sheet)
+    table = build_report_table(
+        df,
+        ticker_meta_csv=meta_csv,
+        max_horizon=max_horizon,
+        action_sheet=action_sheet,
+        news_report=news_report,
+    )
     summary_dl = build_summary_dl(df=df, table=table, asof=asof, forecast_path=f_path, max_horizon=max_horizon)
     acc_html = build_accuracy_html(predict_dir=f_path.parent, max_horizon=max_horizon)
     charts_html = build_charts_html(df=df, table=table, max_horizon=max_horizon)
@@ -64,6 +72,7 @@ def run_report(
             action_sheet=action_sheet,
             backtest_kpi=backtest_kpi,
             asof=asof,
+            news_report=news_report,
         ),
         encoding="utf-8",
     )
@@ -125,6 +134,7 @@ def build_report_table(
     ticker_meta_csv: Path,
     max_horizon: int,
     action_sheet: dict[str, Any] | None = None,
+    news_report: Any | None = None,
 ) -> pd.DataFrame:
     work = df.copy()
     work["ticker"] = work["ticker"].astype(str)
@@ -149,13 +159,20 @@ def build_report_table(
             continue
 
         meta_row = meta.get(str(ticker), {})
+        sec = str(meta_row.get("sector", ""))
         horizons = list(range(1, max_horizon + 1))
-        bull, bear, sig_text, sig_payload = _signal_for_ticker(row_by_h, horizons=horizons)
+        bull, bear, sig_text, sig_payload = _signal_for_ticker(
+            row_by_h,
+            horizons=horizons,
+            ticker=str(ticker),
+            sector=sec,
+            news_report=news_report,
+        )
         is_rec = str(ticker) in recommended_tickers
         row_out = {
             "ticker": str(ticker),
             "name": meta_row.get("name") or meta_row.get("company_name") or str(ticker),
-            "sector": meta_row.get("sector", ""),
+            "sector": sec,
             "signal": sig_text,
             "bull": bull,
             "bear": bear,
@@ -186,6 +203,7 @@ def render_report_html(
     action_sheet: dict[str, Any] | None = None,
     backtest_kpi: dict[str, Any] | None = None,
     asof: str | None = None,
+    news_report: Any | None = None,
 ) -> str:
     return render_html(
         summary_dl=summary_dl,
@@ -197,6 +215,7 @@ def render_report_html(
         action_sheet=action_sheet,
         backtest_kpi=backtest_kpi,
         asof=asof,
+        news_report=news_report,
     )
 
 
@@ -657,7 +676,14 @@ def _fmt_acc_cell(hit: int, valid: int) -> str:
     return f'<span class="{cls}">{rate * 100:.1f}%</span>'
 
 
-def _signal_for_ticker(row_by_h: dict[int, pd.Series], *, horizons: list[int]) -> tuple[int, int, str, str]:
+def _signal_for_ticker(
+    row_by_h: dict[int, pd.Series],
+    *,
+    horizons: list[int],
+    ticker: str = "",
+    sector: str = "",
+    news_report: Any | None = None,
+) -> tuple[int, int, str, str]:
     bull = 0
     bear = 0
     items = []
@@ -691,15 +717,14 @@ def _signal_for_ticker(row_by_h: dict[int, pd.Series], *, horizons: list[int]) -
             label = f"{name}: Bull {b} / Bear {r} ({detail_str})"
             items.append({"label": label, "category": "Model Vote", "bullish": state})
 
-    if bull >= bear + 2:
-        verdict = "bullish"
-        text = "🟢 Bull"
-    elif bear >= bull + 2:
-        verdict = "bearish"
-        text = "🔴 Bear"
-    else:
-        verdict = "neutral"
-        text = "🟡 Neutral"
+    verdict, text, news_items = evaluate_news_hybrid_verdict(
+        quant_bull=bull,
+        quant_bear=bear,
+        ticker=ticker,
+        sector=sector,
+        news_report=news_report,
+    )
+    items.extend(news_items)
     payload = json.dumps({"items": items, "bull": bull, "bear": bear, "verdict": verdict}, ensure_ascii=True)
     return bull, bear, text, payload
 

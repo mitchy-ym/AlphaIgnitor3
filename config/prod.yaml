@@ -25,3 +25,13 @@ top_n: 10
 max_tickers: null
 model_root: models
 report_outdir: report
+# Macro & Sector News Sentiment Engine
+enable_news_sentiment: true
+news_llm_provider: gemini
+news_llm_model: gemini-3.8-flash
+news_thinking_level: HIGH
+news_lookback_hours: 36
+news_macro_weight: 0.35
+news_sector_weight: 0.35
+news_ticker_weight: 0.30
+news_adverse_threshold: -0.45

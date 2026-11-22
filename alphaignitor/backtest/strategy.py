@@ -40,6 +40,8 @@ class TradeSignal:
     limit_price: float | None = None
     tier: int = 1  # 1 = primary (各セクター1銘柄推奨), 2 = fallback/expansion (どうしても枠・セクター2銘柄目)
     action: str = "BUY"  # "BUY" or "SHORT"
+    news_score: float | None = None
+    news_summary: str = ""
 
 
 def evaluate_signals_for_asof(
@@ -56,6 +58,8 @@ def evaluate_signals_for_asof(
     preloaded_details_map: dict | None = None,
     preloaded_weights_map: dict[str, dict[str, float]] | None = None,
     preloaded_close_map: dict[tuple[str, str], float] | None = None,
+    news_report: Any | None = None,
+    adverse_news_threshold: float = -0.45,
 ) -> list[TradeSignal]:
     """Generate and rank trading signals for a specific as-of date based on strategy rules."""
     model_list = models or ENSEMBLE_MODELS
@@ -148,6 +152,29 @@ def evaluate_signals_for_asof(
             is_buy = expected_ret >= float(strategy_cfg.min_predicted_return)
             is_short = getattr(strategy_cfg, "allow_short", False) and (expected_ret <= -min_short_hurdle)
 
+            # News Sentiment Gateway & Impact check
+            n_score: float | None = None
+            n_summary: str = ""
+            if news_report is not None:
+                sec_name = str(sector_map.get(ticker, ""))
+                n_score = news_report.get_composite_ticker_score(ticker=ticker, sector=sec_name)
+                t_impact = news_report.ticker_impacts.get(ticker)
+                if t_impact is not None:
+                    n_summary = t_impact.summary_ja
+                    if t_impact.is_adverse_alert or t_impact.score <= adverse_news_threshold:
+                        # Acute severe negative catalyst warrants blocking BUY entirely
+                        is_buy = False
+                    if is_short and t_impact.score >= 0.45:
+                        # Direct company bullish catalyst suppresses SHORT (prevents short squeeze)
+                        is_short = False
+                elif n_score <= adverse_news_threshold:
+                    # Severe macro/sector headwind suppresses BUY
+                    is_buy = False
+
+                if is_short and n_score >= 0.45:
+                    # Strong bullish macro/sector tailwind suppresses SHORT (prevents short squeeze)
+                    is_short = False
+
             if not is_buy and not is_short:
                 continue
 
@@ -172,7 +199,17 @@ def evaluate_signals_for_asof(
 
             uncertainty_spread = (q90_weighted - q10_weighted) / asof_close if (q90_weighted and q10_weighted) else 0.05
 
+            # Tail-risk & uncertainty filtering
+            max_spread = getattr(strategy_cfg, "max_uncertainty_spread", None)
+            if max_spread is not None and uncertainty_spread > float(max_spread):
+                continue
+
             if is_buy:
+                min_q10 = getattr(strategy_cfg, "min_q10_return", None)
+                if min_q10 is not None and q10_weighted is not None:
+                    q10_ret = (q10_weighted / asof_close) - 1.0
+                    if q10_ret < float(min_q10):
+                        continue
                 # Long consensus check
                 up_models = sum(1 for m, val in preds.items() if val > asof_close)
                 consensus_str = "all" if up_models == len(preds) else ("majority" if up_models >= 2 else "mixed")
@@ -185,6 +222,9 @@ def evaluate_signals_for_asof(
                         continue
                 action_str = "BUY"
                 score = expected_ret / (1.0 + uncertainty_spread)
+                if n_score is not None:
+                    # Boost/penalty based on news sentiment
+                    score *= (1.0 + 0.25 * n_score)
                 limit_p = trading_cfg.calc_limit_price(asof_close, atr=atr_val, expected_return=expected_ret) if trading_cfg else None
             else:
                 # Short consensus check
@@ -196,6 +236,9 @@ def evaluate_signals_for_asof(
                     continue
                 action_str = "SHORT"
                 score = abs(expected_ret) / (1.0 + uncertainty_spread)
+                if n_score is not None:
+                    # For shorts, negative news is a tailwind (boosts score)
+                    score *= (1.0 - 0.25 * n_score)
                 limit_p = trading_cfg.calc_short_limit_price(asof_close, atr=atr_val, expected_return=expected_ret) if trading_cfg else None
 
             candidate_signal = TradeSignal(
@@ -216,6 +259,8 @@ def evaluate_signals_for_asof(
                 atr=atr_val,
                 limit_price=limit_p,
                 action=action_str,
+                news_score=n_score,
+                news_summary=n_summary,
             )
 
             if best_signal_for_ticker is None or candidate_signal.score > best_signal_for_ticker.score:

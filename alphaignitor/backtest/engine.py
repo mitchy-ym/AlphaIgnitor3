@@ -175,8 +175,14 @@ class BacktestEngine:
                     )
                     total_equity_est = cash + long_val_est - short_liab_est
 
+                    # Short sale proceeds + 100% margin collateral are locked and cannot fund new positions
+                    short_locked_cash = sum(
+                        2.0 * t.cost_basis for t in active_trades.values() if t.side == "SHORT"
+                    )
+                    free_cash = cash - short_locked_cash
+
                     slot_target_cash = min(total_equity_est * max_slot_size_pct, total_equity_est * slot_size_pct)
-                    available_cash = min(cash - min_cash_buffer, slot_target_cash)
+                    available_cash = min(free_cash - min_cash_buffer, slot_target_cash)
 
                     if available_cash < 500.0:
                         continue

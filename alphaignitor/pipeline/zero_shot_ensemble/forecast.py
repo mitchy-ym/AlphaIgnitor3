@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import os
 from pathlib import Path
@@ -175,6 +176,15 @@ def run_forecast(
     finally:
         conn.close()
 
+    # Release cached GPU tensor memory before Optuna optimization
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
     print("[ensemble] optimizing ticker weights...", flush=True)
     weights_by_ticker = optimize_all_tickers(
         prediction_cache_path=cache_path,
@@ -220,6 +230,15 @@ def run_forecast(
         )
     finally:
         conn.close()
+
+    # Release cached GPU tensor memory before Optuna optimization
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
     out = pd.DataFrame(rows)
     for col in CORE_FORECAST_COLUMNS:

@@ -3,4 +3,5 @@ __all__ = [
     "zero_shot_ensemble",
     "report_daily_forecast",
     "portal",
+    "news",
 ]

@@ -465,3 +465,80 @@ def test_short_selling_execution_and_tiered_sectors():
     assert d2.exits_today[0]["pnl"] > 0
 
 
+def test_tail_risk_uncertainty_spread_and_q10_filters():
+    """Verify max_uncertainty_spread and min_q10_return block high tail-risk tickers."""
+    from alphaignitor.backtest.strategy import evaluate_signals_for_asof
+
+    cfg = TradingConfig()
+    cfg.strategy.min_predicted_return = 0.02
+    cfg.strategy.consensus_level = "all"
+    cfg.strategy.max_uncertainty_spread = 0.16
+    cfg.strategy.min_q10_return = -0.06
+    cfg.strategy.target_horizon = "2"
+
+    dates = ["2026-08-18"]
+    series_map = {
+        "SAFE": pd.DataFrame([{"trade_date": "2026-08-18", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}]),
+        "WIDE": pd.DataFrame([{"trade_date": "2026-08-18", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}]),
+        "CRASH_Q10": pd.DataFrame([{"trade_date": "2026-08-18", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}]),
+    }
+    # details_map format: (ticker, model, horizon) -> (pred, q10, q50, q90, error)
+    details_map = {}
+    for m in ["chronos2", "timesfm", "tirex"]:
+        # SAFE: spread = (108 - 96)/100 = 0.12 <= 0.16, q10_ret = -4% >= -6%
+        details_map[("SAFE", m, 2)] = (103.5, 96.0, 103.5, 108.0, None)
+        # WIDE: spread = (115 - 95)/100 = 0.20 > 0.16 -> dropped
+        details_map[("WIDE", m, 2)] = (105.0, 95.0, 105.0, 115.0, None)
+        # CRASH_Q10: spread = (106 - 91)/100 = 0.15 <= 0.16, but q10_ret = -9% < -6% -> dropped
+        details_map[("CRASH_Q10", m, 2)] = (103.5, 91.0, 103.5, 106.0, None)
+
+    weights_map = {t: {"chronos2": 1/3, "timesfm": 1/3, "tirex": 1/3} for t in series_map}
+    signals = evaluate_signals_for_asof(
+        asof_date="2026-08-18",
+        tickers=["SAFE", "WIDE", "CRASH_Q10"],
+        series_by_ticker=series_map,
+        strategy_cfg=cfg.strategy,
+        preloaded_details_map=details_map,
+        preloaded_weights_map=weights_map,
+        preloaded_close_map={("SAFE", "2026-08-18"): 100.0, ("WIDE", "2026-08-18"): 100.0, ("CRASH_Q10", "2026-08-18"): 100.0},
+    )
+    tickers_out = [s.ticker for s in signals]
+    assert tickers_out == ["SAFE"]
+
+
+def test_short_margin_lock_prevents_over_leverage():
+    """Short sale proceeds must be locked as margin collateral and not fund extra long slots."""
+    cfg = TradingConfig()
+    cfg.capital.initial_cash_usd = 10000.0
+    cfg.portfolio.slot_size_pct = 0.50
+    cfg.portfolio.max_slot_size_pct = 0.50
+    cfg.portfolio.min_cash_buffer_usd = 0.0
+    cfg.portfolio.max_slots = 5
+    cfg.strategy.holding_days = 3
+    cfg.execution.order_type = "MOO"
+    cfg.execution.slippage_pct = 0.0
+    cfg.execution.commission_pct = 0.0
+
+    # 2 shorts + 1 long on same day -> total 100% allocated, 3rd position cannot exceed remaining free cash
+    df_s1 = pd.DataFrame([
+        {"trade_date": "2026-08-18", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+        {"trade_date": "2026-08-19", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+    ])
+    df_s2 = df_s1.copy()
+    df_l1 = df_s1.copy()
+    series_map = {"S1": df_s1, "S2": df_s2, "L1": df_l1}
+
+    sigs = [
+        TradeSignal(ticker="S1", asof_date="2026-08-18", target_horizon=2, expected_return=-0.12, asof_close=100.0, action="SHORT", sector="Tech", score=0.9),
+        TradeSignal(ticker="S2", asof_date="2026-08-18", target_horizon=2, expected_return=-0.12, asof_close=100.0, action="SHORT", sector="Fin", score=0.8),
+        TradeSignal(ticker="L1", asof_date="2026-08-18", target_horizon=2, expected_return=0.05, asof_close=100.0, action="BUY", sector="Health", score=0.7),
+    ]
+
+    engine = BacktestEngine(cfg, series_map)
+    result = engine.run(
+        trade_dates=["2026-08-18", "2026-08-19"],
+        signals_by_date={"2026-08-18": sigs},
+    )
+    # Two 50% short positions consume all $10,000 capital; L1 must NOT be funded by short proceeds
+    entered = [t.ticker for t in result.trades]
+    assert set(entered) == {"S1", "S2"}

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import html
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 
 def format_size(num_bytes: int) -> str:
@@ -78,10 +80,42 @@ def scan_reports(report_dir: Path) -> dict:
             "summary": summary_data,
         }
 
+    # Check latest news sentiment report if available
+    latest_macro = None
+    try:
+        from alphaignitor.pipeline.news.storage import NewsSentimentStorage
+        news_db = report_dir.parent / "cache" / "news_sentiment.sqlite3"
+        if not news_db.exists():
+            news_db = Path("cache/news_sentiment.sqlite3")
+        if news_db.exists():
+            storage = NewsSentimentStorage(news_db)
+            macro_report = None
+            if daily_reports:
+                latest_date = daily_reports[0]["date"]
+                macro_report = storage.load_macro_report(latest_date)
+            if macro_report is None:
+                macro_report = storage.load_latest_macro_report()
+
+            if macro_report is not None:
+                latest_macro = {
+                    "asof_date": macro_report.asof_date,
+                    "macro_score": macro_report.macro_score,
+                    "macro_regime": macro_report.macro_regime,
+                    "event_risk_level": macro_report.event_risk_level,
+                    "event_risk_note": macro_report.event_risk_note,
+                    "sector_scores": {
+                        k: v.to_dict() if hasattr(v, "to_dict") else v
+                        for k, v in macro_report.sector_scores.items()
+                    },
+                }
+    except Exception:
+        latest_macro = None
+
     return {
         "daily_reports": daily_reports,
         "backtest_info": backtest_info,
         "latest_daily": daily_reports[0] if daily_reports else None,
+        "latest_macro": latest_macro,
         "total_days": len(daily_reports),
         "generated_at": datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         "tz_name": datetime.datetime.now().astimezone().strftime("%Z") or "SGT",
@@ -116,6 +150,70 @@ def render_portal_html(data: dict) -> str:
                 f"(Sharpe <strong>{s.get('sharpe_ratio_str')}</strong>, MaxDD <strong>{s.get('max_drawdown_str')}</strong>, "
                 f"勝率 {s.get('win_rate_str')})。LOO推奨指値 + {policy_txt}。"
             )
+
+    latest_macro = data.get("latest_macro")
+    macro_card_html = ""
+    if latest_macro:
+        m_score = float(latest_macro.get("macro_score", 0.0))
+        m_regime = html.escape(str(latest_macro.get("macro_regime", "Neutral")))
+        m_risk = str(latest_macro.get("event_risk_level", "LOW"))
+        m_note_raw = latest_macro.get("event_risk_note")
+        m_note = html.escape(str(m_note_raw)) if m_note_raw else None
+
+        if m_score >= 0.20:
+            m_col = "#10b981"
+            m_badge = f"🟢 {m_regime} ({m_score:+.2f})"
+        elif m_score <= -0.20:
+            m_col = "#ef4444"
+            m_badge = f"🔴 {m_regime} ({m_score:+.2f})"
+        else:
+            m_col = "#f59e0b"
+            m_badge = f"🟡 {m_regime} ({m_score:+.2f})"
+
+        if m_risk == "HIGH":
+            risk_meta = f"⚠️ イベント警戒: {m_note or '高リスク'}"
+        elif m_risk == "MEDIUM":
+            risk_meta = f"⚡ イベント注視: {m_note}" if m_note else "Event Risk: MEDIUM"
+        else:
+            risk_meta = "Event Risk: LOW"
+
+        top_sectors_html = ""
+        sec_scores = latest_macro.get("sector_scores", {})
+        if sec_scores:
+            def _sec_val(val: Any) -> float:
+                if hasattr(val, "score"):
+                    return float(val.score)
+                if isinstance(val, dict):
+                    return float(val.get("score", 0.0))
+                try:
+                    return float(val)
+                except Exception:
+                    return 0.0
+
+            sorted_sec = sorted(
+                sec_scores.items(),
+                key=lambda x: -_sec_val(x[1]),
+            )
+            parts = []
+            if sorted_sec:
+                top_b = sorted_sec[0]
+                sc_b = _sec_val(top_b[1])
+                if sc_b > 0:
+                    parts.append(f"🟢 {html.escape(str(top_b[0]))} {sc_b:+.2f}")
+                top_r = sorted_sec[-1]
+                sc_r = _sec_val(top_r[1])
+                if sc_r < 0:
+                    parts.append(f"🔴 {html.escape(str(top_r[0]))} {sc_r:+.2f}")
+            if parts:
+                top_sectors_html = f'<div style="font-size: 11px; margin-top: 4px; color: var(--text-secondary);">' + " | ".join(parts) + '</div>'
+
+        macro_card_html = f"""
+        <div class="kpi-card">
+          <div class="kpi-label">政治・経済マクロ地合い</div>
+          <div class="kpi-value" style="color: {m_col}; font-size: 20px;">{m_badge}</div>
+          <div class="kpi-meta">{risk_meta}{top_sectors_html}</div>
+        </div>
+        """
 
     return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -655,6 +753,7 @@ def render_portal_html(data: dict) -> str:
           <div class="kpi-value">{latest_daily['date'] if latest_daily else 'N/A'}</div>
           <div class="kpi-meta">{latest_daily['weekday'] + '曜日' if latest_daily else ''}</div>
         </div>
+        {macro_card_html}
         <div class="kpi-card">
           <div class="kpi-label">アーカイブ蓄積日数</div>
           <div class="kpi-value">{total_days} <span style="font-size: 16px; font-weight: normal; color: var(--text-secondary);">日分</span></div>

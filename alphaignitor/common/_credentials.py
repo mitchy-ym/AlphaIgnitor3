@@ -121,3 +121,14 @@ def get_api_key() -> str:
         )
     return str(api_key)
 
+
+def get_gemini_api_key() -> str | None:
+    """Gemini API キーを取得する（未設定の場合は None）。"""
+    ensure_api_key_loaded()
+    for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        val = os.environ.get(key)
+        if val and not _is_placeholder(val, min_length=15):
+            return str(val)
+    return None
+
+

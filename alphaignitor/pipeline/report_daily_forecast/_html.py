@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import html
+import json
 import math
+from pathlib import Path
 from typing import Any
+
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+
+
+def _load_asset(filename: str) -> str:
+    return (_ASSETS_DIR / filename).read_text(encoding="utf-8")
 
 import numpy as np
 import pandas as pd
@@ -68,6 +76,27 @@ def _render_table(
                 tds.append(f'<td class="col-ticker"><span class="ticker-pill">{html.escape(s)}</span>{badge}</td>')
             elif key == "name":
                 tds.append(f'<td class="col-name">{html.escape(s)}</td>')
+            elif key == "signal":
+                sig_tooltip = ""
+                sig_json_str = row_dict.get("signals_json")
+                if sig_json_str:
+                    try:
+                        sig_data = json.loads(sig_json_str)
+                        items = sig_data.get("items", [])
+                        lines = []
+                        for item in items:
+                            cat = item.get("category", "")
+                            lbl = item.get("label", "")
+                            if cat and lbl:
+                                lines.append(f"[{cat}] {lbl}")
+                            elif lbl:
+                                lines.append(lbl)
+                        sig_tooltip = "\n".join(lines)
+                    except Exception:
+                        pass
+                title_attr = f' title="{html.escape(sig_tooltip)}"' if sig_tooltip else ''
+                cursor_style = ' style="cursor:help"' if sig_tooltip else ''
+                tds.append(f'<td class="col-signal"{title_attr}{cursor_style}>{html.escape(s)}</td>')
             elif label.startswith("Day "):
                 tds.append(f'<td class="day-horizon-col num-cell">{html.escape(s)}</td>')
             elif label == "Avg":
@@ -82,12 +111,94 @@ def _render_table(
     return f"<table{id_attr}><thead><tr>{head}</tr></thead>\n<tbody>\n" + "\n".join(rows_html) + "\n</tbody></table>"
 
 
+def _render_macro_pulse(nr_dict: dict[str, Any] | None) -> str:
+    """政治・経済マクロ概況およびセクターセンチメントのパルスウィジェットを生成する。"""
+    if not nr_dict:
+        return ""
+    macro_score = float(nr_dict.get("macro_score", 0.0))
+    macro_regime = str(nr_dict.get("macro_regime", "Neutral"))
+    event_risk = str(nr_dict.get("event_risk_level", "LOW")).upper()
+    event_note = nr_dict.get("event_risk_note")
+    drivers = nr_dict.get("key_drivers_ja", [])
+    sector_scores = nr_dict.get("sector_scores", {})
+    count = int(nr_dict.get("articles_analyzed_count", 0))
+
+    if macro_score >= 0.20:
+        regime_badge = f'<span class="macro-regime-badge badge-bull">🟢 {html.escape(macro_regime)} ({macro_score:+.2f})</span>'
+    elif macro_score <= -0.20:
+        regime_badge = f'<span class="macro-regime-badge badge-bear">🔴 {html.escape(macro_regime)} ({macro_score:+.2f})</span>'
+    else:
+        regime_badge = f'<span class="macro-regime-badge badge-neutral">🟡 {html.escape(macro_regime)} ({macro_score:+.2f})</span>'
+
+    risk_badge = ""
+    if event_risk == "HIGH":
+        risk_badge = f'<span class="macro-risk-badge risk-high">⚠️ イベント警戒: {html.escape(str(event_note or "高リスク"))}</span>'
+    elif event_risk == "MEDIUM":
+        risk_badge = f'<span class="macro-risk-badge risk-med">⚡ イベント注視{": " + html.escape(str(event_note)) if event_note else ""}</span>'
+
+    drivers_html = ""
+    if drivers:
+        items = "".join(f"<li>{html.escape(str(d))}</li>" for d in drivers[:3])
+        drivers_html = f'<ul class="macro-drivers-list">{items}</ul>'
+
+    sectors_html = ""
+    if sector_scores:
+        sec_chips = []
+        for sec, val in sorted(
+            sector_scores.items(),
+            key=lambda x: -float(x[1].get("score", 0.0) if isinstance(x[1], dict) else x[1]),
+        ):
+            s_score = float(val.get("score", 0.0) if isinstance(val, dict) else val)
+            s_reason = str(val.get("reason_ja", "") if isinstance(val, dict) else "")
+            if s_score >= 0.15:
+                chip_cls = "sec-chip-bull"
+            elif s_score <= -0.15:
+                chip_cls = "sec-chip-bear"
+            else:
+                chip_cls = "sec-chip-neutral"
+            title_attr = html.escape(f"{sec}: {s_score:+.2f} ({s_reason})" if s_reason else f"{sec}: {s_score:+.2f}")
+            sec_chips.append(f'<span class="sec-chip {chip_cls}" title="{title_attr}">{html.escape(sec)} <b>{s_score:+.2f}</b></span>')
+        sectors_html = f'<div class="macro-sectors-row">{"".join(sec_chips)}</div>'
+
+    return f"""
+    <div class="macro-pulse-container">
+      <div class="macro-pulse-header">
+        <div class="macro-title-box">
+          <span class="macro-pulse-icon">🌐</span>
+          <span class="macro-pulse-heading">Macro Political & Economic Pulse</span>
+          {regime_badge}
+          {risk_badge}
+        </div>
+        <div class="macro-meta-box">
+          <span>解析ニュース: <b>{count}件</b> (FRB/CNBC/Bloomberg/Polygon)</span>
+        </div>
+      </div>
+      <div class="macro-pulse-content">
+        {drivers_html}
+        {sectors_html}
+      </div>
+    </div>
+    """
+
+
 def _render_executive_cockpit(
     action_sheet: dict[str, Any] | None,
     backtest_kpi: dict[str, Any] | None,
     asof: str,
+    news_report: Any | None = None,
 ) -> str:
     """最上部のエグゼクティブ・コックピット（Action Sheet & Strategy Evidence）を生成する。"""
+    nr_dict = None
+    if news_report is not None:
+        if hasattr(news_report, "to_dict"):
+            nr_dict = news_report.to_dict()
+        elif isinstance(news_report, dict):
+            nr_dict = news_report
+    elif action_sheet and isinstance(action_sheet.get("news_report"), dict):
+        nr_dict = action_sheet["news_report"]
+
+    macro_pulse_html = _render_macro_pulse(nr_dict)
+
     # ── 1. Action Sheet (左カード) ──────────────────────────────────────
     if action_sheet:
         available_slots = int(action_sheet.get("available_slots", 5))
@@ -171,6 +282,15 @@ def _render_executive_cockpit(
             sector_badge = f'<span class="ticket-sector">{sector}</span>' if sector else ""
             tier_badge = '<span class="ticket-tier">拡張枠(2銘柄目)</span>' if tier == 2 else ""
 
+            n_summary = html.escape(str(b.get("news_summary") or ""))
+            n_score = b.get("news_score")
+            news_badge = ""
+            if n_score is not None:
+                n_sign = "+" if n_score >= 0 else ""
+                n_col = "text-green" if n_score > 0.15 else ("text-red" if n_score < -0.15 else "")
+                news_badge = f'<span class="ticket-news-badge {n_col}">📰 {n_sign}{n_score:.2f}</span>'
+            news_note = f'<div class="ticket-news-note">📰 <b>ニュース・材料</b>: {n_summary}</div>' if n_summary else ""
+
             ret_sign = "+" if exp_ret >= 0 else ""
             buys_html += f"""
             <div class="action-ticket {ticket_cls}">
@@ -180,6 +300,7 @@ def _render_executive_cockpit(
                   <span class="ticket-ticker">{tk}</span>
                   {sector_badge}
                   {tier_badge}
+                  {news_badge}
                   <span class="ticket-exp">期待値: <b class="{exp_col}">{ret_sign}{exp_ret}%</b> ({consensus})</span>
                 </div>
                 <button class="copy-order-btn" data-copy="{copy_payload}" onclick="copyOrderText(this)" title="発注パラメータをコピー">
@@ -204,6 +325,7 @@ def _render_executive_cockpit(
                   <span class="t-val text-red"><b>{sl_str}</b></span>
                 </div>
               </div>
+              {news_note}
               <div class="ticket-footer-note">
                 💡 moomoo設定: <b>指値 ({limit_str})</b> / 有効期間 <b>Day</b> / 時間外取引 (Outside RTH) <b>OFF</b>
               </div>
@@ -344,6 +466,8 @@ def _render_executive_cockpit(
         </div>
       </div>
 
+      {macro_pulse_html}
+
       <div class="cockpit-grid">
         <!-- Action Sheet -->
         <div class="cockpit-card action-card">
@@ -387,6 +511,7 @@ def render_html(
     action_sheet: dict[str, Any] | None = None,
     backtest_kpi: dict[str, Any] | None = None,
     asof: str | None = None,
+    news_report: Any | None = None,
 ) -> str:
     """完全なHTMLレポートドキュメントを生成する。"""
     # 銘柄センチメント集計
@@ -408,7 +533,12 @@ def render_html(
 
     asof_label = html.escape(str(asof or (all_tbl.iloc[0]["asof_trade_date"] if "asof_trade_date" in all_tbl.columns and not all_tbl.empty else "Today")))
 
-    cockpit_html = _render_executive_cockpit(action_sheet, backtest_kpi, asof=asof_label)
+    cockpit_html = _render_executive_cockpit(
+        action_sheet,
+        backtest_kpi,
+        asof=asof_label,
+        news_report=news_report,
+    )
 
     return f"""<!doctype html>
 <html lang="ja">
@@ -420,1001 +550,7 @@ def render_html(
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
-    :root {{
-      --primary: #4f46e5;
-      --primary-hover: #4338ca;
-      --primary-light: #e0e7ff;
-      --success: #16a34a;
-      --success-light: #dcfce7;
-      --danger: #dc2626;
-      --danger-light: #fee2e2;
-      --warning: #d97706;
-      --warning-light: #fef3c7;
-      --slate-900: #0f172a;
-      --slate-800: #1e293b;
-      --slate-700: #334155;
-      --slate-600: #475569;
-      --slate-500: #64748b;
-      --slate-400: #94a3b8;
-      --slate-200: #e2e8f0;
-      --slate-100: #f1f5f9;
-      --slate-50: #f8fafc;
-      --card-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
-      --card-shadow-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
-    }}
-
-    * {{ box-sizing: border-box; }}
-    body {{
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      margin: 0;
-      padding: 24px;
-      color: var(--slate-800);
-      background-color: var(--slate-50);
-      line-height: 1.5;
-    }}
-
-    /* ── Header ──────────────────────────────────────────────────────────── */
-    .top-header {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 24px;
-      padding-bottom: 16px;
-      border-bottom: 1px solid var(--slate-200);
-    }}
-    .brand-title {{
-      margin: 0 0 4px 0;
-      font-family: 'Outfit', sans-serif;
-      font-size: 26px;
-      font-weight: 800;
-      background: linear-gradient(135deg, #4f46e5, #06b6d4);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      letter-spacing: -0.02em;
-    }}
-    .brand-sub {{
-      margin: 0;
-      color: var(--slate-500);
-      font-size: 13px;
-      font-weight: 500;
-    }}
-    .portal-nav-link {{
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 16px;
-      background: var(--primary-light);
-      color: var(--primary-hover);
-      text-decoration: none;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 13px;
-      transition: all 0.2s ease;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-    }}
-    .portal-nav-link:hover {{
-      background: #c7d2fe;
-      transform: translateY(-1px);
-    }}
-
-    /* ── Executive Cockpit ───────────────────────────────────────────────── */
-    .cockpit-wrapper {{
-      background: #ffffff;
-      border: 1px solid #cbd5e1;
-      border-radius: 14px;
-      padding: 20px;
-      margin-bottom: 24px;
-      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
-    }}
-    .cockpit-header-bar {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-bottom: 16px;
-      padding-bottom: 14px;
-      border-bottom: 1px solid var(--slate-200);
-    }}
-    .cockpit-title-group {{
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }}
-    .cockpit-badge {{
-      background: #e0e7ff;
-      color: #4338ca;
-      padding: 4px 10px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }}
-    .cockpit-main-title {{
-      margin: 0;
-      font-family: 'Outfit', sans-serif;
-      font-size: 19px;
-      font-weight: 700;
-      color: var(--slate-900);
-    }}
-    .cockpit-meta-group {{
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }}
-    .meta-pill {{
-      font-size: 12px;
-      font-weight: 600;
-      padding: 4px 10px;
-      border-radius: 6px;
-    }}
-    .time-pill {{
-      background: #fef3c7;
-      color: #92400e;
-      border: 1px solid #fde68a;
-    }}
-    .valid-pill {{
-      background: #dcfce7;
-      color: #166534;
-      border: 1px solid #bbf7d0;
-    }}
-
-    .cockpit-grid {{
-      display: block;
-    }}
-
-    .cockpit-card {{
-      background: var(--slate-50);
-      border: 1px solid var(--slate-200);
-      border-radius: 10px;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-    }}
-    .card-top-header {{
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 12px;
-    }}
-    .card-heading {{
-      margin: 0 0 2px 0;
-      font-family: 'Outfit', sans-serif;
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--slate-900);
-    }}
-    .card-caption {{
-      margin: 0;
-      font-size: 11px;
-      color: var(--slate-500);
-    }}
-
-    /* Slot status */
-    .slot-status-box {{
-      text-align: right;
-    }}
-    .slot-text {{
-      font-size: 12px;
-      color: var(--slate-600);
-    }}
-    .slot-dots {{
-      display: inline-flex;
-      gap: 4px;
-      margin-top: 4px;
-    }}
-    .slot-dot {{
-      width: 12px;
-      height: 12px;
-      border-radius: 3px;
-    }}
-    .slot-dot.filled {{
-      background: #4f46e5;
-    }}
-    .slot-dot.empty {{
-      background: #cbd5e1;
-    }}
-
-    /* Action tickets */
-    .action-tickets-container {{
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      margin-bottom: 12px;
-    }}
-    .action-ticket {{
-      background: #ffffff;
-      border-radius: 8px;
-      padding: 12px 14px;
-      border: 1px solid var(--slate-200);
-      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
-    }}
-    .ticket-buy {{
-      border-left: 5px solid var(--primary);
-    }}
-    .ticket-short {{
-      border-left: 5px solid #dc2626;
-      background: #fffafa;
-    }}
-    .ticket-exit {{
-      border-left: 5px solid var(--danger);
-      background: #fff5f5;
-    }}
-    .ticket-top {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-    }}
-    .ticket-title-row {{
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }}
-    .ticket-badge-buy {{
-      background: #2563eb;
-      color: #ffffff;
-      font-size: 10px;
-      font-weight: 800;
-      padding: 2px 6px;
-      border-radius: 4px;
-      letter-spacing: 0.5px;
-    }}
-    .ticket-badge-exit {{
-      background: var(--danger);
-      color: #ffffff;
-      font-size: 10px;
-      font-weight: 800;
-      padding: 2px 6px;
-      border-radius: 4px;
-    }}
-    .ticket-badge-short {{
-      background: #dc2626;
-      color: #ffffff;
-      font-size: 10px;
-      font-weight: 800;
-      padding: 2px 6px;
-      border-radius: 4px;
-      letter-spacing: 0.5px;
-    }}
-    .ticket-ticker {{
-      font-family: 'Outfit', sans-serif;
-      font-size: 16px;
-      font-weight: 800;
-      color: var(--slate-900);
-    }}
-    .ticket-sector {{
-      background: var(--slate-100);
-      color: var(--slate-600);
-      font-size: 11px;
-      font-weight: 600;
-      padding: 1px 6px;
-      border-radius: 4px;
-      border: 1px solid var(--slate-200);
-    }}
-    .ticket-tier {{
-      background: #fef3c7;
-      color: #b45309;
-      font-size: 10px;
-      font-weight: 700;
-      padding: 1px 5px;
-      border-radius: 4px;
-      border: 1px solid #fde68a;
-    }}
-    .ticket-exp {{
-      font-size: 12px;
-      color: var(--slate-600);
-    }}
-    .copy-order-btn {{
-      font-family: 'Inter', sans-serif;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 4px 8px;
-      background: var(--slate-100);
-      color: var(--slate-700);
-      border: 1px solid var(--slate-200);
-      border-radius: 5px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }}
-    .copy-order-btn:hover {{
-      background: #e2e8f0;
-      color: var(--slate-900);
-    }}
-
-    .ticket-grid {{
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 8px;
-      background: var(--slate-50);
-      border-radius: 6px;
-      padding: 8px 10px;
-      font-size: 12px;
-    }}
-    @media (max-width: 640px) {{
-      .ticket-grid {{
-        grid-template-columns: repeat(2, 1fr);
-      }}
-    }}
-    .t-cell {{
-      display: flex;
-      flex-direction: column;
-    }}
-    .t-lbl {{
-      font-size: 10px;
-      color: var(--slate-500);
-      text-transform: uppercase;
-    }}
-    .t-val {{
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      color: var(--slate-900);
-      margin-top: 2px;
-    }}
-    .shares-highlight {{
-      color: var(--primary);
-      font-weight: 700;
-    }}
-    .alloc-sub {{
-      font-size: 10px;
-      color: var(--slate-500);
-    }}
-    .ticket-footer-note {{
-      margin-top: 8px;
-      padding-top: 6px;
-      border-top: 1px dashed var(--slate-200);
-      font-size: 11px;
-      color: var(--slate-600);
-    }}
-    .ticket-footer-note b {{
-      color: var(--slate-800);
-    }}
-
-    /* Reserves styles */
-    .reserves-box {{
-      background: #f8fafc;
-      border: 1px dashed #cbd5e1;
-      border-radius: 8px;
-      padding: 8px 12px;
-    }}
-    .reserves-header {{
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--slate-600);
-      margin-bottom: 6px;
-    }}
-    .reserves-body {{
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }}
-    .reserve-row {{
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: #ffffff;
-      border: 1px solid var(--slate-200);
-      border-radius: 6px;
-      padding: 6px 10px;
-      font-size: 11px;
-    }}
-    .reserve-left {{
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }}
-    .reserve-badge {{
-      background: #e0e7ff;
-      color: #4338ca;
-      font-size: 9px;
-      font-weight: 800;
-      padding: 1px 5px;
-      border-radius: 3px;
-    }}
-    .reserve-ticker {{
-      font-family: 'Outfit', sans-serif;
-      font-weight: 800;
-      font-size: 13px;
-      color: var(--slate-900);
-    }}
-    .reserve-sec {{
-      color: var(--slate-500);
-      font-size: 10px;
-    }}
-    .reserve-center {{
-      display: flex;
-      gap: 12px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11px;
-      color: var(--slate-700);
-    }}
-    .copy-order-btn-sm {{
-      font-size: 11px;
-      padding: 2px 6px;
-      background: var(--slate-100);
-      border: 1px solid var(--slate-200);
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }}
-    .copy-order-btn-sm:hover {{
-      background: #e2e8f0;
-    }}
-
-    .action-empty {{
-      text-align: center;
-      padding: 24px 16px;
-      color: var(--slate-500);
-    }}
-    .empty-icon {{ font-size: 28px; margin-bottom: 4px; }}
-    .empty-msg {{ font-weight: 600; font-size: 13px; color: var(--slate-700); }}
-    .empty-sub {{ font-size: 11px; margin-top: 2px; }}
-
-    .holds-bar {{
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      background: #ffffff;
-      border-radius: 6px;
-      border: 1px solid var(--slate-200);
-      font-size: 11px;
-    }}
-    .holds-title {{ font-weight: 700; color: var(--slate-600); }}
-    .holds-list {{ display: flex; gap: 6px; flex-wrap: wrap; }}
-    .hold-pill {{
-      background: var(--slate-100);
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-family: 'JetBrains Mono', monospace;
-    }}
-    .be-pill {{
-      background: #fef3c7;
-      color: #92400e;
-      border: 1px solid #fde68a;
-      font-size: 10px;
-      font-weight: 700;
-      padding: 1px 5px;
-      border-radius: 4px;
-      margin-left: 4px;
-    }}
-
-    .card-bottom-bar {{
-      display: flex;
-      justify-content: space-between;
-      font-size: 11px;
-      color: var(--slate-500);
-      padding-top: 8px;
-      border-top: 1px solid var(--slate-200);
-    }}
-
-    /* Backtest Evidence Card */
-    .btn-backtest-link {{
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--primary);
-      text-decoration: none;
-      background: #ffffff;
-      border: 1px solid #c7d2fe;
-      padding: 4px 8px;
-      border-radius: 6px;
-      transition: all 0.15s ease;
-    }}
-    .btn-backtest-link:hover {{
-      background: var(--primary-light);
-    }}
-
-    .kpi-quad-grid {{
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 8px;
-      margin-bottom: 12px;
-    }}
-    .kpi-mini-card {{
-      background: #ffffff;
-      border: 1px solid var(--slate-200);
-      border-radius: 8px;
-      padding: 10px 12px;
-      display: flex;
-      flex-direction: column;
-    }}
-    .kpi-m-label {{
-      font-size: 10px;
-      font-weight: 600;
-      color: var(--slate-500);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }}
-    .kpi-m-val {{
-      font-family: 'Outfit', sans-serif;
-      font-size: 20px;
-      font-weight: 700;
-      margin: 2px 0 1px 0;
-    }}
-    .kpi-m-sub {{
-      font-size: 10px;
-      color: var(--slate-400);
-    }}
-
-    .rules-summary-box {{
-      background: #ffffff;
-      border: 1px solid var(--slate-200);
-      border-radius: 8px;
-      padding: 10px 12px;
-      font-size: 11px;
-    }}
-    .rules-title {{
-      font-weight: 700;
-      color: var(--slate-800);
-      margin-bottom: 6px;
-    }}
-    .rules-list {{
-      margin: 0;
-      padding-left: 16px;
-      color: var(--slate-600);
-      line-height: 1.6;
-    }}
-
-    /* ── Zone 2: Market Sentiment & Accuracy ─────────────────────────────── */
-    .zone-2-row {{
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 18px;
-      margin-bottom: 24px;
-    }}
-    @media (max-width: 900px) {{
-      .zone-2-row {{
-        grid-template-columns: 1fr;
-      }}
-    }}
-    .panel-box {{
-      background: #ffffff;
-      border: 1px solid var(--slate-200);
-      border-radius: 12px;
-      padding: 16px;
-      box-shadow: var(--card-shadow);
-    }}
-    .panel-title {{
-      margin: 0 0 10px 0;
-      font-family: 'Outfit', sans-serif;
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--slate-900);
-    }}
-
-    /* Sentiment bar */
-    .sentiment-bar-container {{
-      margin-bottom: 14px;
-    }}
-    .sentiment-labels {{
-      display: flex;
-      justify-content: space-between;
-      font-size: 12px;
-      font-weight: 600;
-      margin-bottom: 6px;
-    }}
-    .sentiment-bar {{
-      height: 10px;
-      border-radius: 5px;
-      display: flex;
-      overflow: hidden;
-      background: var(--slate-200);
-    }}
-    .bar-bull {{ background: #16a34a; }}
-    .bar-neutral {{ background: #eab308; }}
-    .bar-bear {{ background: #dc2626; }}
-
-    .meta-details {{
-      font-size: 12px;
-      margin-top: 8px;
-    }}
-    .meta-details summary {{
-      cursor: pointer;
-      color: var(--primary);
-      font-weight: 600;
-      user-select: none;
-    }}
-    .meta-details dl {{
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 6px 10px;
-      margin: 10px 0 0 0;
-      background: var(--slate-50);
-      padding: 10px;
-      border-radius: 6px;
-    }}
-    .meta-details dt {{ color: var(--slate-500); font-weight: 600; }}
-    .meta-details dd {{ margin: 0; color: var(--slate-800); font-family: 'JetBrains Mono', monospace; word-break: break-all; }}
-
-    /* Accuracy table */
-    .acc-table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      border-radius: 6px;
-      overflow: hidden;
-    }}
-    .acc-table th, .acc-table td {{
-      padding: 6px 10px;
-      border-bottom: 1px solid var(--slate-200);
-      text-align: right;
-    }}
-    .acc-table th:first-child, .acc-table td:first-child {{
-      text-align: left;
-    }}
-    .acc-table th:nth-child(2), .acc-table td:nth-child(2) {{
-      text-align: center;
-    }}
-    .acc-table thead th {{
-      background: var(--slate-50);
-      color: var(--slate-600);
-      font-weight: 600;
-    }}
-    .acc-table tfoot td {{
-      background: var(--slate-100);
-      font-weight: 700;
-    }}
-    .acc-rate-hi {{ color: #16a34a; font-weight: 700; }}
-    .acc-rate-lo {{ color: #dc2626; font-weight: 700; }}
-
-    /* ── Zone 3: Table & Charts ──────────────────────────────────────────── */
-    .split-layout {{
-      display: flex;
-      gap: 20px;
-      align-items: flex-start;
-    }}
-    .left-panel {{
-      flex: 0 0 60%;
-      min-width: 0;
-    }}
-    .right-panel {{
-      flex: 0 0 calc(40% - 20px);
-      min-width: 0;
-      position: sticky;
-      top: 24px;
-      max-height: calc(100vh - 48px);
-      overflow-y: auto;
-    }}
-    @media (max-width: 1024px) {{
-      .split-layout {{
-        flex-direction: column;
-      }}
-      .left-panel, .right-panel {{
-        flex: 1 1 100%;
-        width: 100%;
-        position: static;
-        max-height: none;
-        overflow-y: visible;
-      }}
-    }}
-
-    /* Table Toolbar */
-    .table-toolbar {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-bottom: 12px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--slate-200);
-    }}
-    .toolbar-left {{
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }}
-    .search-box {{
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-    }}
-    .search-input {{
-      font-family: 'Inter', sans-serif;
-      font-size: 12px;
-      padding: 6px 12px;
-      border: 1px solid var(--slate-300);
-      border-radius: 6px;
-      width: 220px;
-      background: #ffffff;
-      outline: none;
-      transition: all 0.2s ease;
-    }}
-    .search-input:focus {{
-      border-color: var(--primary);
-      box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
-      width: 260px;
-    }}
-    .pill-btn {{
-      font-family: 'Inter', sans-serif;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 5px 10px;
-      border: 1px solid var(--slate-200);
-      border-radius: 6px;
-      background: #ffffff;
-      color: var(--slate-700);
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }}
-    .pill-btn:hover {{
-      background: var(--slate-100);
-      border-color: var(--slate-400);
-    }}
-    .pill-btn.btn-rec {{
-      background: #f0fdf4;
-      border-color: #bbf7d0;
-      color: #166534;
-      font-weight: 700;
-    }}
-    .pill-btn.btn-rec:hover {{
-      background: #dcfce7;
-    }}
-    .toggle-btn {{
-      font-family: 'Inter', sans-serif;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 5px 10px;
-      border: 1px solid var(--slate-300);
-      border-radius: 6px;
-      background: #ffffff;
-      color: var(--slate-600);
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }}
-    .toggle-btn:hover {{
-      background: var(--slate-50);
-      border-color: var(--slate-400);
-    }}
-    .toggle-btn.active {{
-      background: var(--primary-light);
-      border-color: #c7d2fe;
-      color: var(--primary);
-      font-weight: 700;
-    }}
-    .count-indicator {{
-      font-size: 11px;
-      color: var(--slate-500);
-      font-weight: 500;
-    }}
-
-    /* Table styling */
-    .table-scroll {{
-      overflow-x: auto;
-      border: 1px solid var(--slate-200);
-      border-radius: 8px;
-      background: #ffffff;
-    }}
-    table {{
-      width: max-content;
-      min-width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }}
-    th, td {{
-      padding: 9px 12px;
-      border-bottom: 1px solid var(--slate-100);
-      white-space: nowrap;
-    }}
-    th {{
-      font-weight: 600;
-      background: var(--slate-50);
-      color: var(--slate-600);
-      border-bottom: 2px solid var(--slate-200);
-      text-align: left;
-    }}
-    th.sortable {{
-      cursor: pointer;
-      user-select: none;
-    }}
-    th.sortable:hover {{
-      background: var(--slate-100);
-      color: var(--slate-900);
-    }}
-    th.sortable .sort-ind {{
-      margin-left: 4px;
-      color: var(--primary);
-      font-weight: 700;
-    }}
-
-    td.num-cell {{
-      font-family: 'JetBrains Mono', monospace;
-      font-variant-numeric: tabular-nums;
-      text-align: right;
-    }}
-    .day-horizon-col {{
-      display: none;
-    }}
-
-    /* Ticker & Name cells */
-    .ticker-pill {{
-      font-family: 'JetBrains Mono', monospace;
-      font-weight: 700;
-      color: var(--slate-900);
-    }}
-    .badge-buy-sm {{
-      background: #16a34a;
-      color: #ffffff;
-      font-size: 10px;
-      font-weight: 800;
-      padding: 2px 6px;
-      border-radius: 4px;
-      margin-left: 4px;
-      vertical-align: middle;
-    }}
-    .col-name {{
-      color: var(--slate-600);
-      font-size: 12px;
-      max-width: 180px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }}
-
-    /* Row highlight for recommended */
-    tr.recommended-row td {{
-      background-color: #f0fdf4 !important;
-    }}
-    tr.recommended-row:hover td {{
-      background-color: #dcfce7 !important;
-    }}
-    tr.checked-row td {{
-      background-color: #e0e7ff !important;
-    }}
-
-    /* Dropdowns */
-    th.filterable {{
-      cursor: pointer;
-      user-select: none;
-      position: relative;
-    }}
-    th.filterable .filter-ind {{ color: var(--slate-400); }}
-    th.filterable.filter-active {{ color: var(--primary); }}
-    th.filterable.filter-active .filter-ind {{ color: var(--primary); font-weight: 900; }}
-    .sector-dropdown {{
-      display: none;
-      position: absolute;
-      top: 100%;
-      left: 0;
-      z-index: 200;
-      background: #ffffff;
-      border: 1px solid var(--slate-200);
-      border-radius: 8px;
-      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-      min-width: 200px;
-      max-height: 320px;
-      overflow-y: auto;
-      padding: 8px 0;
-      font-size: 12px;
-      font-weight: normal;
-      white-space: nowrap;
-    }}
-    .sector-dropdown.open {{ display: block; }}
-    .sector-dropdown label {{
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 14px;
-      cursor: pointer;
-      color: var(--slate-700);
-    }}
-    .sector-dropdown label:hover {{ background: var(--slate-100); color: var(--slate-900); }}
-    .sector-dropdown .dd-actions {{
-      display: flex;
-      gap: 8px;
-      padding: 4px 14px 6px;
-    }}
-    .sector-dropdown .dd-actions button {{
-      font-size: 11px;
-      font-weight: 600;
-      padding: 4px 8px;
-      border: 1px solid var(--slate-200);
-      border-radius: 4px;
-      background: #ffffff;
-      color: var(--slate-600);
-      cursor: pointer;
-    }}
-
-    /* ── Charts Panel ────────────────────────────────────────────────────── */
-    .charts-container {{
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }}
-    .chart-block {{
-      position: relative;
-      background: #ffffff;
-      border: 1px solid var(--slate-200);
-      border-radius: 8px;
-      padding: 12px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-      cursor: pointer;
-    }}
-    .chart-block h3 {{
-      margin: 0 0 8px 0;
-      font-family: 'Outfit', sans-serif;
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--slate-900);
-    }}
-    .chart-block img, .chart-block svg {{
-      width: 100%;
-      height: auto;
-      border: 1px solid var(--slate-100);
-      border-radius: 6px;
-    }}
-    .signal-overlay {{
-      position: absolute;
-      top: 36px;
-      right: 12px;
-      z-index: 100;
-      background: rgba(255, 255, 255, 0.98);
-      border: 1px solid var(--slate-200);
-      border-radius: 8px;
-      padding: 12px 14px;
-      font-size: 11px;
-      line-height: 1.6;
-      max-width: 230px;
-      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.15);
-      display: none;
-      backdrop-filter: blur(4px);
-    }}
-    .signal-overlay .ov-badge {{
-      font-family: 'Outfit', sans-serif;
-      font-weight: 700;
-      font-size: 13px;
-      margin-bottom: 6px;
-      padding-bottom: 6px;
-      border-bottom: 1px solid var(--slate-100);
-    }}
-    .signal-overlay .ov-cat {{
-      font-weight: 700;
-      color: var(--slate-400);
-      margin: 6px 0 3px;
-      font-size: 9px;
-      text-transform: uppercase;
-      letter-spacing: .06em;
-    }}
-    .signal-overlay .ov-item {{
-      padding: 2px 0;
-      font-weight: 500;
-    }}
-
-    /* Utility text colors */
-    .text-green {{ color: #16a34a !important; font-weight: 700; }}
-    .text-red {{ color: #dc2626 !important; font-weight: 700; }}
-    .text-blue {{ color: #2563eb !important; font-weight: 700; }}
-    .sig-bull {{ color: #16a34a; }}
-    .sig-bear {{ color: #dc2626; }}
-    .sig-neutral {{ color: var(--slate-600); }}
-
-    /* Toast notification */
-    #copy-toast {{
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      background: #0f172a;
-      color: #ffffff;
-      padding: 10px 18px;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-      z-index: 9999;
-      opacity: 0;
-      transform: translateY(10px);
-      transition: all 0.25s ease;
-      pointer-events: none;
-    }}
-    #copy-toast.show {{
-      opacity: 1;
-      transform: translateY(0);
-    }}
+{_load_asset("report.css")}
     </style>
   </head>
 <body>
@@ -1510,502 +646,7 @@ def render_html(
   </div>
 
   <script>
-  // Toast notification helper & resilient clipboard copy (works on HTTP LAN and mobile)
-  function showCopyToast() {{
-    const toast = document.getElementById('copy-toast');
-    if (toast) {{
-      toast.textContent = '✓ 発注指示をコピーしました';
-      toast.classList.add('show');
-      setTimeout(() => toast.classList.remove('show'), 2500);
-    }}
-  }}
-
-  function fallbackCopy(text) {{
-    try {{
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      const success = document.execCommand('copy');
-      document.body.removeChild(ta);
-      if (success) {{
-        showCopyToast();
-        return;
-      }}
-    }} catch (e) {{}}
-    prompt('発注指示をコピーしてください:', text);
-  }}
-
-  function copyOrderText(btn) {{
-    const text = btn.getAttribute('data-copy');
-    if (!text) return;
-    if (navigator.clipboard && window.isSecureContext) {{
-      navigator.clipboard.writeText(text).then(showCopyToast).catch(() => {{
-        fallbackCopy(text);
-      }});
-    }} else {{
-      fallbackCopy(text);
-    }}
-  }}
-
-  (function () {{
-    const table = document.getElementById('all-tickers');
-    if (!table) return;
-    const tbody = table.tBodies && table.tBodies[0];
-    if (!tbody) return;
-
-    const ths = Array.from(table.querySelectorAll('thead th'));
-    const rows = Array.from(tbody.rows);
-
-    // Initial state: default sort indicator on Avg or Bull
-    let state = {{ idx: -1, asc: false }};
-    // Locate the 'Avg' or '🟢' column index
-    const bullColIdx = ths.findIndex(th => th.textContent.includes('🟢'));
-    if (bullColIdx >= 0) state = {{ idx: bullColIdx, asc: false }};
-
-    // ── Search & Filter Logic ─────────────────────────────────────────────
-    let searchTerm = '';
-    let activeSectors = null; // null = no filter (show all)
-    let activeSignals = null;
-
-    const sectorThIdx = ths.findIndex(th => th.getAttribute('data-filterable') === 'sector');
-    const signalThIdx = ths.findIndex(th => th.getAttribute('data-filterable') === 'signal');
-    const tickerThIdx = ths.findIndex(th => th.textContent.trim().startsWith('Ticker'));
-    const nameThIdx   = ths.findIndex(th => th.textContent.trim().startsWith('Name'));
-
-    function applyFilters() {{
-      let visibleCount = 0;
-      rows.forEach(r => {{
-        let show = true;
-
-        // Search text filter
-        if (searchTerm) {{
-          const tText = (tickerThIdx >= 0 && r.children[tickerThIdx]) ? r.children[tickerThIdx].textContent.toLowerCase() : '';
-          const nText = (nameThIdx >= 0 && r.children[nameThIdx]) ? r.children[nameThIdx].textContent.toLowerCase() : '';
-          if (!tText.includes(searchTerm) && !nText.includes(searchTerm)) {{
-            show = false;
-          }}
-        }}
-
-        // Sector filter
-        if (show && activeSectors !== null && sectorThIdx >= 0) {{
-          const sec = r.children[sectorThIdx] ? r.children[sectorThIdx].textContent.trim() : '';
-          if (!activeSectors.has(sec)) show = false;
-        }}
-
-        // Signal filter
-        if (show && activeSignals !== null && signalThIdx >= 0) {{
-          const sig = r.children[signalThIdx] ? r.children[signalThIdx].textContent.trim() : '';
-          if (!activeSignals.has(sig)) show = false;
-        }}
-
-        r.style.display = show ? '' : 'none';
-        if (show) visibleCount++;
-      }});
-
-      const badge = document.getElementById('row-count-badge');
-      if (badge) badge.textContent = `${{visibleCount}} / ${{rows.length}} 銘柄`;
-    }}
-
-    // Search input event
-    const searchInput = document.getElementById('table-search');
-    if (searchInput) {{
-      searchInput.addEventListener('input', () => {{
-        searchTerm = searchInput.value.trim().toLowerCase();
-        applyFilters();
-      }});
-    }}
-
-    // ── Sector dropdown filter ────────────────────────────────────────────
-    function allColValues(idx) {{
-      const s = new Set();
-      rows.forEach(r => {{
-        const td = r.children[idx];
-        if (td) s.add(td.textContent.trim());
-      }});
-      return Array.from(s).sort();
-    }}
-
-    if (sectorThIdx >= 0) {{
-      const sectorTh = ths[sectorThIdx];
-      const dd = document.createElement('div');
-      dd.className = 'sector-dropdown';
-
-      function rebuildSectorDd() {{
-        dd.innerHTML = `
-          <div class="dd-actions">
-            <button type="button" class="btn-dd-all">Select All</button>
-            <button type="button" class="btn-dd-none">Deselect All</button>
-          </div>
-        `;
-        dd.querySelector('.btn-dd-all').onclick = (e) => {{
-          e.stopPropagation();
-          dd.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = true);
-        }};
-        dd.querySelector('.btn-dd-none').onclick = (e) => {{
-          e.stopPropagation();
-          dd.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false);
-        }};
-
-        allColValues(sectorThIdx).forEach(sec => {{
-          const lbl = document.createElement('label');
-          const cb = document.createElement('input');
-          cb.type = 'checkbox';
-          cb.value = sec;
-          cb.checked = activeSectors === null || activeSectors.has(sec);
-          cb.onclick = (e) => e.stopPropagation();
-          lbl.appendChild(cb);
-          lbl.appendChild(document.createTextNode(sec || '(blank)'));
-          dd.appendChild(lbl);
-        }});
-      }}
-
-      sectorTh.style.position = 'relative';
-      sectorTh.appendChild(dd);
-
-      sectorTh.addEventListener('click', (e) => {{
-        e.stopPropagation();
-        const isOpen = dd.classList.contains('open');
-        document.querySelectorAll('.sector-dropdown.open').forEach(d => d.classList.remove('open'));
-        if (!isOpen) {{
-          rebuildSectorDd();
-          dd.classList.add('open');
-        }}
-      }});
-
-      document.addEventListener('click', () => {{
-        if (!dd.classList.contains('open')) return;
-        dd.classList.remove('open');
-        const checked = Array.from(dd.querySelectorAll('input[type=checkbox]:checked')).map(c => c.value);
-        const allVals = allColValues(sectorThIdx);
-        activeSectors = (checked.length === allVals.length) ? null : new Set(checked);
-        sectorTh.classList.toggle('filter-active', activeSectors !== null);
-        applyFilters();
-      }});
-      dd.addEventListener('click', (e) => e.stopPropagation());
-    }}
-
-    // ── Signal dropdown filter ────────────────────────────────────────────
-    if (signalThIdx >= 0) {{
-      const signalTh = ths[signalThIdx];
-      const dd = document.createElement('div');
-      dd.className = 'sector-dropdown';
-
-      function rebuildSignalDd() {{
-        dd.innerHTML = `
-          <div class="dd-actions">
-            <button type="button" class="btn-sig-all">Select All</button>
-            <button type="button" class="btn-sig-none">Deselect All</button>
-          </div>
-        `;
-        dd.querySelector('.btn-sig-all').onclick = (e) => {{
-          e.stopPropagation();
-          dd.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = true);
-        }};
-        dd.querySelector('.btn-sig-none').onclick = (e) => {{
-          e.stopPropagation();
-          dd.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false);
-        }};
-
-        allColValues(signalThIdx).forEach(sig => {{
-          const lbl = document.createElement('label');
-          const cb = document.createElement('input');
-          cb.type = 'checkbox';
-          cb.value = sig;
-          cb.checked = activeSignals === null || activeSignals.has(sig);
-          cb.onclick = (e) => e.stopPropagation();
-          lbl.appendChild(cb);
-          lbl.appendChild(document.createTextNode(sig || '(blank)'));
-          dd.appendChild(lbl);
-        }});
-      }}
-
-      signalTh.style.position = 'relative';
-      signalTh.appendChild(dd);
-
-      signalTh.addEventListener('click', (e) => {{
-        e.stopPropagation();
-        const isOpen = dd.classList.contains('open');
-        document.querySelectorAll('.sector-dropdown.open').forEach(d => d.classList.remove('open'));
-        if (!isOpen) {{
-          rebuildSignalDd();
-          dd.classList.add('open');
-        }}
-      }});
-
-      document.addEventListener('click', () => {{
-        if (!dd.classList.contains('open')) return;
-        dd.classList.remove('open');
-        const checked = Array.from(dd.querySelectorAll('input[type=checkbox]:checked')).map(c => c.value);
-        const allVals = allColValues(signalThIdx);
-        activeSignals = (checked.length === allVals.length) ? null : new Set(checked);
-        signalTh.classList.toggle('filter-active', activeSignals !== null);
-        applyFilters();
-      }});
-      dd.addEventListener('click', (e) => e.stopPropagation());
-    }}
-
-    // ── Chart Visibility Sync ─────────────────────────────────────────────
-    function updateCharts() {{
-      const checkedTickers = new Set(
-        Array.from(table.querySelectorAll('.row-check:checked')).map(cb => cb.dataset.ticker)
-      );
-      let visible = 0;
-      document.querySelectorAll('#charts-container .chart-block').forEach(div => {{
-        const show = checkedTickers.has(div.dataset.ticker);
-        div.style.display = show ? '' : 'none';
-        if (show) visible++;
-      }});
-      const noMsg = document.getElementById('no-charts-msg');
-      if (noMsg) noMsg.style.display = visible === 0 ? '' : 'none';
-      const label = document.getElementById('chart-count-label');
-      if (label) label.textContent = visible > 0 ? `(${{visible}} 銘柄表示中)` : '';
-
-      rows.forEach(r => {{
-        const cb = r.querySelector('.row-check');
-        r.classList.toggle('checked-row', !!(cb && cb.checked));
-      }});
-    }}
-
-    table.addEventListener('change', e => {{
-      if (e.target.classList.contains('row-check')) {{
-        updateCharts();
-        syncMasterCheckbox();
-      }}
-    }});
-
-    // ── Master Checkbox ───────────────────────────────────────────────────
-    const masterCb = document.getElementById('check-all-master');
-    function syncMasterCheckbox() {{
-      if (!masterCb) return;
-      const visibleCbs = Array.from(table.querySelectorAll('tbody tr')).filter(r => r.style.display !== 'none').map(r => r.querySelector('.row-check')).filter(Boolean);
-      const checkedCount = visibleCbs.filter(cb => cb.checked).length;
-      if (checkedCount === 0) {{
-        masterCb.checked = false;
-        masterCb.indeterminate = false;
-      }} else if (checkedCount === visibleCbs.length) {{
-        masterCb.checked = true;
-        masterCb.indeterminate = false;
-      }} else {{
-        masterCb.checked = false;
-        masterCb.indeterminate = true;
-      }}
-    }}
-    if (masterCb) {{
-      masterCb.addEventListener('change', () => {{
-        const visibleCbs = Array.from(table.querySelectorAll('tbody tr')).filter(r => r.style.display !== 'none').map(r => r.querySelector('.row-check')).filter(Boolean);
-        visibleCbs.forEach(cb => cb.checked = masterCb.checked);
-        updateCharts();
-      }});
-    }}
-
-    // ── Quick Select Toolbar Buttons ──────────────────────────────────────
-    const btnSelRec = document.getElementById('btn-sel-rec');
-    if (btnSelRec) {{
-      btnSelRec.addEventListener('click', () => {{
-        let hasRec = false;
-        rows.forEach(r => {{
-          const cb = r.querySelector('.row-check');
-          const isRec = r.getAttribute('data-recommended') === '1';
-          if (cb) {{
-            cb.checked = isRec;
-            if (isRec) hasRec = true;
-          }}
-        }});
-        // If no recommended, select top 3
-        if (!hasRec) {{
-          rows.slice(0, 3).forEach(r => {{
-            const cb = r.querySelector('.row-check');
-            if (cb) cb.checked = true;
-          }});
-        }}
-        updateCharts();
-        syncMasterCheckbox();
-      }});
-    }}
-
-    const btnSelTop5 = document.getElementById('btn-sel-top5');
-    if (btnSelTop5) {{
-      btnSelTop5.addEventListener('click', () => {{
-        let checked = 0;
-        rows.forEach(r => {{
-          const cb = r.querySelector('.row-check');
-          if (cb) {{
-            if (r.style.display !== 'none' && checked < 5) {{
-              cb.checked = true;
-              checked++;
-            }} else {{
-              cb.checked = false;
-            }}
-          }}
-        }});
-        updateCharts();
-        syncMasterCheckbox();
-      }});
-    }}
-
-    const btnSelAll = document.getElementById('btn-sel-all');
-    if (btnSelAll) {{
-      btnSelAll.addEventListener('click', () => {{
-        rows.forEach(r => {{
-          const cb = r.querySelector('.row-check');
-          if (cb && r.style.display !== 'none') cb.checked = true;
-        }});
-        updateCharts();
-        syncMasterCheckbox();
-      }});
-    }}
-
-    const btnSelClear = document.getElementById('btn-sel-clear');
-    if (btnSelClear) {{
-      btnSelClear.addEventListener('click', () => {{
-        rows.forEach(r => {{
-          const cb = r.querySelector('.row-check');
-          if (cb) cb.checked = false;
-        }});
-        updateCharts();
-        syncMasterCheckbox();
-      }});
-    }}
-
-    // ── Column Sorting ────────────────────────────────────────────────────
-    function cellText(tr, idx) {{
-      const td = tr.children[idx];
-      return (td && td.textContent ? td.textContent : '').trim();
-    }}
-
-    function parseSortValue(txt, sortType) {{
-      const s = (txt || '').trim();
-      if (!s) return null;
-      if (sortType === 'forecast') {{
-        const m = s.match(/^([+-]?[\\d.]+)%/);
-        const v = m ? parseFloat(m[1]) : NaN;
-        return Number.isFinite(v) ? v : null;
-      }}
-      if (sortType === 'number') {{
-        const v = parseFloat(s);
-        return Number.isFinite(v) ? v : null;
-      }}
-      const v = parseFloat(s.replace(/,/g, ''));
-      if (Number.isFinite(v) && /^[+-]?\\d/.test(s)) return v;
-      return s.toLowerCase();
-    }}
-
-    function compareValues(a, b) {{
-      if (a === null && b === null) return 0;
-      if (a === null) return 1;
-      if (b === null) return -1;
-      if (typeof a === 'number' && typeof b === 'number') return a - b;
-      return String(a).localeCompare(String(b), 'en', {{ numeric: true, sensitivity: 'base' }});
-    }}
-
-    ths.forEach((th, idx) => {{
-      if (idx === 0) return; // Checkbox column
-      if (th.getAttribute('data-filterable')) return;
-      th.addEventListener('click', () => {{
-        const sortType = th.getAttribute('data-sort-type') || 'string';
-        let asc = (state.idx === idx) ? !state.asc : (sortType === 'string');
-        state = {{ idx, asc }};
-
-        rows.sort((ra, rb) => {{
-          const va = parseSortValue(cellText(ra, idx), sortType);
-          const vb = parseSortValue(cellText(rb, idx), sortType);
-          const c = compareValues(va, vb);
-          return asc ? c : -c;
-        }});
-
-        rows.forEach(r => tbody.appendChild(r));
-
-        ths.forEach(t => {{
-          const ind = t.querySelector('.sort-ind');
-          if (ind) ind.textContent = '';
-        }});
-        const ind = th.querySelector('.sort-ind');
-        if (ind) ind.textContent = asc ? '↑' : '↓';
-      }});
-    }});
-
-    // ── Horizon Columns Toggle ────────────────────────────────────────────
-    const toggleDayBtn = document.getElementById('toggle-day-cols');
-    if (toggleDayBtn) {{
-      toggleDayBtn.addEventListener('click', () => {{
-        const isActive = toggleDayBtn.classList.toggle('active');
-        const displayVal = isActive ? 'table-cell' : 'none';
-        table.querySelectorAll('.day-horizon-col').forEach(el => {{ el.style.display = displayVal; }});
-      }});
-    }}
-
-    // ── Initial Selection on Page Load ────────────────────────────────────
-    // Prioritize recommended buy rows!
-    const recCheckboxes = Array.from(table.querySelectorAll('.row-check[data-recommended="1"]'));
-    if (recCheckboxes.length > 0) {{
-      recCheckboxes.forEach(cb => cb.checked = true);
-    }} else {{
-      // Fallback: select top 3
-      rows.slice(0, 3).forEach(r => {{
-        const cb = r.querySelector('.row-check');
-        if (cb) cb.checked = true;
-      }});
-    }}
-
-    updateCharts();
-    syncMasterCheckbox();
-
-    // ── Chart Signal Overlay (Hover + Tap for Mobile) ─────────────────────
-    document.querySelectorAll('.chart-block[data-signals]').forEach(function(block) {{
-      const overlay = document.createElement('div');
-      overlay.className = 'signal-overlay';
-      block.appendChild(overlay);
-
-      function renderOverlayContent() {{
-        try {{
-          const data = JSON.parse(block.dataset.signals);
-          const v = data.verdict;
-          const verdictText = v === 'bullish' ? '🟢 Bullish' : v === 'bearish' ? '🔴 Bearish' : '🟡 Neutral';
-          const verdictCls  = v === 'bullish' ? 'sig-bull' : v === 'bearish' ? 'sig-bear' : 'sig-neutral';
-          let h = '<div class="ov-badge ' + verdictCls + '">' + verdictText
-                + ' <span style="font-weight:normal">🟢' + data.bull + ' 🔴' + data.bear + '</span></div>';
-          const cats = {{}};
-          (data.items || []).forEach(item => {{
-            if (!cats[item.category]) cats[item.category] = [];
-            cats[item.category].push(item);
-          }});
-          for (const cat in cats) {{
-            h += '<div class="ov-cat">' + cat + '</div>';
-            cats[cat].forEach(item => {{
-              const icon = item.bullish === true ? '🟢' : item.bullish === false ? '🔴' : '🟡';
-              const cls  = item.bullish === true ? 'sig-bull' : item.bullish === false ? 'sig-bear' : 'sig-neutral';
-              h += '<div class="ov-item ' + cls + '">' + icon + ' ' + item.label + '</div>';
-            }});
-          }}
-          overlay.innerHTML = h;
-        }} catch(e) {{}}
-      }}
-
-      // Desktop hover
-      block.addEventListener('mouseenter', () => {{
-        renderOverlayContent();
-        overlay.style.display = 'block';
-      }});
-      block.addEventListener('mouseleave', () => {{
-        overlay.style.display = 'none';
-      }});
-
-      // Mobile touch toggle
-      block.addEventListener('click', (e) => {{
-        if (overlay.style.display === 'block') {{
-          overlay.style.display = 'none';
-        }} else {{
-          renderOverlayContent();
-          overlay.style.display = 'block';
-        }}
-      }});
-    }});
-
-  }})();
+{_load_asset("report.js")}
   </script>
 </body>
 </html>

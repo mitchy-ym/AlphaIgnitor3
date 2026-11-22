@@ -41,6 +41,16 @@ class PipelineConfig:
     max_tickers: int | None = None
     model_root: str = "models"
     report_outdir: str = "report"
+    # Macro & Sector News Sentiment Engine
+    enable_news_sentiment: bool = True
+    news_llm_provider: str = "gemini"
+    news_llm_model: str = "gemini-3.8-flash"
+    news_thinking_level: str = "HIGH"
+    news_lookback_hours: int = 36
+    news_macro_weight: float = 0.35
+    news_sector_weight: float = 0.35
+    news_ticker_weight: float = 0.30
+    news_adverse_threshold: float = -0.45
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

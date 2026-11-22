@@ -295,7 +295,13 @@ def optimize_ticker(
     def objective(trial: optuna.Trial) -> float:
         raw = {model: trial.suggest_float(f"w_{model}", 0.0, 1.0) for model in models}
         weights = normalize_weights(raw)
-        return score_rows(rows, weights=weights, min_available_models=min_available_models)
+        return score_rows(
+            rows,
+            weights=weights,
+            min_available_models=min_available_models,
+            l2_penalty=0.05,
+            mae_penalty_weight=0.20,
+        )
 
     completed_trials = _finished_trial_count(study)
     trials_to_run = max(int(n_trials) - completed_trials, 0)
@@ -426,8 +432,22 @@ def build_training_rows(
     return rows
 
 
-def score_rows(rows: list[dict], *, weights: dict[str, float], min_available_models: int) -> float:
+def score_rows(
+    rows: list[dict],
+    *,
+    weights: dict[str, float],
+    min_available_models: int,
+    l2_penalty: float = 0.0,
+    mae_penalty_weight: float = 0.0,
+) -> float:
     by_horizon: dict[int, list[int]] = {}
+    errors: list[float] = []
+
+    # L2 regularization anchor towards equal weighting (prevents single-model overfitting)
+    w_vals = list(weights.values())
+    eq_target = 1.0 / len(w_vals) if w_vals else 0.0
+    reg_loss = l2_penalty * sum((w - eq_target) ** 2 for w in w_vals)
+
     for row in rows:
         preds: dict[str, float] = row["preds"]
         available = set(preds)
@@ -435,15 +455,28 @@ def score_rows(rows: list[dict], *, weights: dict[str, float], min_available_mod
             continue
         local_weights = normalize_weights(weights, available_models=available)
         ensemble = sum(preds[model] * local_weights[model] for model in local_weights)
-        dirs = evaluable_direction_pair(float(row["asof_close"]), float(ensemble), float(row["actual_close"]))
+
+        asof_c = float(row["asof_close"])
+        act_c = float(row["actual_close"])
+        if asof_c > 0 and act_c > 0:
+            pred_ret = (ensemble / asof_c) - 1.0
+            act_ret = (act_c / asof_c) - 1.0
+            errors.append(abs(pred_ret - act_ret))
+
+        dirs = evaluable_direction_pair(asof_c, float(ensemble), act_c)
         if dirs is None:
             continue
         pred_dir, actual_dir = dirs
         bucket = by_horizon.setdefault(int(row["horizon"]), [0, 0])
         bucket[0] += int(pred_dir == actual_dir)
         bucket[1] += 1
+
     scores = [hits / valid for hits, valid in by_horizon.values() if valid]
-    return float(np.mean(scores)) if scores else 0.0
+    da = float(np.mean(scores)) if scores else 0.0
+    mae = float(np.mean(errors)) if errors else 0.0
+
+    # Composite risk-adjusted objective
+    return float(da - (mae_penalty_weight * mae) - reg_loss)
 
 
 def _study_name(*, ticker: str, asof_dates: list) -> str:

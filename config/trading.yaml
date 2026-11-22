@@ -19,6 +19,8 @@ strategy:
   take_profit_pct: 0.04
   consensus_level: all
   use_q10_filter: false
+  max_uncertainty_spread: 0.16
+  min_q10_return: -0.06
   min_directional_accuracy: 0.55
   exit_on_down_signal: false
   max_per_sector: 2
